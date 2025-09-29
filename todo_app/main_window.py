@@ -448,16 +448,25 @@ class ModernTodoAppWindow(QMainWindow):
     def _show_empty_list_message(self) -> None:
         self.list_widget.clear()
         empty_item = QListWidgetItem(self.list_widget)
+        empty_container = QWidget()
+        container_layout = QVBoxLayout(empty_container)
+        container_layout.setContentsMargins(0, 40, 0, 40)
+        container_layout.setSpacing(0)
+        container_layout.addStretch()
+
         empty_label = QLabel("🎉 暂无待办事项！")
         empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         empty_label.setStyleSheet(
-            f"color: {COLOR_TEXT_SECONDARY}; font-style: italic; padding: 30px; font-size: 12pt; background-color: transparent;"
+            f"color: {COLOR_TEXT_SECONDARY}; font-style: italic; font-size: 12pt; background-color: transparent;"
         )
-        empty_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        view_width = self.list_widget.viewport().width() if self.list_widget.viewport() else self.list_widget.width()
-        empty_item.setSizeHint(QSize(max(view_width - 10, 200), 100))
+        empty_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        container_layout.addWidget(empty_label, alignment=Qt.AlignmentFlag.AlignCenter)
+        container_layout.addStretch()
+
+        viewport_size = self.list_widget.viewport().size() if self.list_widget.viewport() else self.list_widget.size()
+        empty_item.setSizeHint(QSize(max(viewport_size.width() - 10, 200), max(viewport_size.height(), 160)))
         self.list_widget.addItem(empty_item)
-        self.list_widget.setItemWidget(empty_item, empty_label)
+        self.list_widget.setItemWidget(empty_item, empty_container)
 
     def _filter_todos(self, todos_list: List[dict]) -> List[dict]:
         filter_text = self.filter_combo.currentText()

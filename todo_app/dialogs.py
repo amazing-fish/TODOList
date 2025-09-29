@@ -1,7 +1,7 @@
 """应用所用对话框。"""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, timezone
 from typing import Optional
 
 from PySide6.QtCore import Qt
@@ -166,7 +166,7 @@ class NotificationDialog(QDialog):
 
     def snooze_8pm(self) -> None:
         now = datetime.now().astimezone()
-        target_dt = datetime.combine(now, time(20, 0), tzinfo=now.tzinfo)
+        target_dt = datetime.combine(now.date(), time(20, 0), tzinfo=now.tzinfo)
         self._set_snooze_and_close(target_dt - now)
 
     def get_snooze_duration(self) -> Optional[timedelta]:
@@ -384,13 +384,13 @@ class TaskEditDialog(QDialog):
             self.update_selected_date_label()
 
     def get_task_data(self) -> dict:
-        from PySide6.QtCore import QDateTime, timezone
+        from PySide6.QtCore import QDateTime
 
         due_date_iso_utc = None
         if self.set_due_date_button.isChecked() and self._internal_due_date:
-            py_due_date_utc = (
-                QDateTime(self._internal_due_date, self.time_edit.time()).toUTC().toPython().replace(tzinfo=timezone.utc)
-            )
+            py_due_date_utc = QDateTime(self._internal_due_date, self.time_edit.time()).toUTC().toPython()
+            if py_due_date_utc.tzinfo is None:
+                py_due_date_utc = py_due_date_utc.replace(tzinfo=timezone.utc)
             due_date_iso_utc = py_due_date_utc.isoformat()
 
         return {
@@ -401,7 +401,7 @@ class TaskEditDialog(QDialog):
         }
 
     def accept(self) -> None:  # type: ignore[override]
-        from PySide6.QtCore import QDateTime, timezone
+        from PySide6.QtCore import QDateTime
 
         text = self.task_input.toPlainText().strip()
         if not text:
@@ -409,9 +409,9 @@ class TaskEditDialog(QDialog):
             return
 
         if self.set_due_date_button.isChecked() and self._internal_due_date:
-            py_due_date_utc = (
-                QDateTime(self._internal_due_date, self.time_edit.time()).toUTC().toPython().replace(tzinfo=timezone.utc)
-            )
+            py_due_date_utc = QDateTime(self._internal_due_date, self.time_edit.time()).toUTC().toPython()
+            if py_due_date_utc.tzinfo is None:
+                py_due_date_utc = py_due_date_utc.replace(tzinfo=timezone.utc)
             if self.todo_item is None and py_due_date_utc <= datetime.now(timezone.utc):
                 QMessageBox.warning(self, "时间错误", "新任务的截止时间必须是未来的某个时间点！")
                 return
