@@ -1,0 +1,85 @@
+"""应用程序常量定义。"""
+from __future__ import annotations
+
+from PySide6.QtCore import QSize
+
+from .paths import DATA_FILE
+
+
+# --- 基本信息 ---
+APP_NAME = "桌面待办事项 v1"
+APP_VERSION = "1.6.0"
+
+# --- 文件资源 ---
+APP_ICON_PATH = "app_icon.png"
+TRAY_ICON_PATH = "tray_icon.png"
+DONE_ICON_PATH = "done_icon.png"
+EDIT_ICON_PATH = "edit_icon.png"
+DELETE_ICON_PATH = "delete_icon.png"
+SNOOZE_ICON_PATH = "snooze_icon.png"
+CALENDAR_ICON_PATH = "calendar_icon.png"
+ADD_ICON_PATH = "add_icon.png"
+REMINDER_SOUND_PATH = "reminder.wav"
+DUE_SOUND_PATH = "due.wav"
+
+# --- 颜色 ---
+COLOR_BACKGROUND = "#ECEFF1"
+COLOR_PRIMARY_ITEM_BG = "#FFFFFF"
+COLOR_COMPLETED_ITEM_BG = "#E0E0E0"
+COLOR_TEXT_PRIMARY = "#263238"
+COLOR_TEXT_SECONDARY = "#546E7A"
+COLOR_TEXT_COMPLETED = "#78909C"
+COLOR_ACCENT = "#00796B"
+COLOR_ACCENT_HOVER = "#004D40"
+COLOR_PRIORITY_HIGH = "#E53935"
+COLOR_PRIORITY_MEDIUM = "#FFB300"
+COLOR_PRIORITY_LOW = "#42A5F5"
+COLOR_DUE_WARNING = "#EF6C00"
+COLOR_DUE_CRITICAL = "#D32F2F"
+
+# --- 提醒选项 ---
+REMINDER_OPTIONS_MAP = {
+    "不提醒": -1,
+    "到期时": 0,
+    "5分钟前": 300,
+    "15分钟前": 900,
+    "30分钟前": 1800,
+    "1小时前": 3600,
+    "1天前": 86400,
+}
+REMINDER_SECONDS_TO_TEXT_MAP = {v: k for k, v in REMINDER_OPTIONS_MAP.items()}
+
+# --- 图标渲染默认尺寸 ---
+DEFAULT_ICON_SIZE = QSize(16, 16)
+
+__all__ = [
+    "APP_NAME",
+    "APP_VERSION",
+    "APP_ICON_PATH",
+    "TRAY_ICON_PATH",
+    "DONE_ICON_PATH",
+    "EDIT_ICON_PATH",
+    "DELETE_ICON_PATH",
+    "SNOOZE_ICON_PATH",
+    "CALENDAR_ICON_PATH",
+    "ADD_ICON_PATH",
+    "REMINDER_SOUND_PATH",
+    "DUE_SOUND_PATH",
+    "COLOR_BACKGROUND",
+    "COLOR_PRIMARY_ITEM_BG",
+    "COLOR_COMPLETED_ITEM_BG",
+    "COLOR_TEXT_PRIMARY",
+    "COLOR_TEXT_SECONDARY",
+    "COLOR_TEXT_COMPLETED",
+    "COLOR_ACCENT",
+    "COLOR_ACCENT_HOVER",
+    "COLOR_PRIORITY_HIGH",
+    "COLOR_PRIORITY_MEDIUM",
+    "COLOR_PRIORITY_LOW",
+    "COLOR_DUE_WARNING",
+    "COLOR_DUE_CRITICAL",
+    "REMINDER_OPTIONS_MAP",
+    "REMINDER_SECONDS_TO_TEXT_MAP",
+    "DEFAULT_ICON_SIZE",
+    "DATA_FILE",
+]
