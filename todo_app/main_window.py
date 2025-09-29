@@ -29,6 +29,7 @@ from .constants import (
     APP_ICON_PATH,
     APP_NAME,
     APP_VERSION,
+    ADD_ICON_PATH,
     COLOR_ACCENT,
     COLOR_ACCENT_HOVER,
     COLOR_BACKGROUND,
@@ -98,7 +99,7 @@ class ModernTodoAppWindow(QMainWindow):
         self.sort_combo.currentTextChanged.connect(self.update_list_widget)
         controls_layout.addWidget(self.sort_combo, 2)
 
-        self.add_button = QPushButton("+")
+        self.add_button = QPushButton()
         self.add_button.setToolTip("添加新任务")
         self.add_button.setFixedSize(36, 36)
         self.add_button.setStyleSheet(
@@ -110,6 +111,9 @@ class ModernTodoAppWindow(QMainWindow):
             QPushButton:hover {{ background-color: {COLOR_ACCENT_HOVER}; }}
             """
         )
+        self.add_button.setIcon(get_icon(ADD_ICON_PATH, "+"))
+        self.add_button.setIconSize(QSize(18, 18))
+        self.add_button.setAccessibleName("添加任务")
         self.add_button.clicked.connect(self.show_add_task_dialog)
         controls_layout.addWidget(self.add_button)
         main_layout.addLayout(controls_layout)
