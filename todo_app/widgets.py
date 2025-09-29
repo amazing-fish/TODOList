@@ -29,6 +29,7 @@ from .constants import (
     DELETE_ICON_PATH,
     DONE_ICON_PATH,
     EDIT_ICON_PATH,
+    INCOMPLETE_ICON_PATH,
 )
 from .utils import get_icon, truncate_text_for_width
 
@@ -75,7 +76,9 @@ class TodoItemWidget(QFrame):
         self.complete_button = QPushButton()
         self.complete_button.setCheckable(True)
         self.complete_button.setChecked(is_completed)
-        self.complete_button.setIcon(get_icon(DONE_ICON_PATH, "✓" if is_completed else "○"))
+        icon_path = DONE_ICON_PATH if is_completed else INCOMPLETE_ICON_PATH
+        fallback_char = "✓" if is_completed else "○"
+        self.complete_button.setIcon(get_icon(icon_path, fallback_char))
         self.complete_button.setIconSize(QSize(20, 20))
         self.complete_button.setToolTip("标记为完成/未完成")
         self.complete_button.clicked.connect(self._toggle_complete)
@@ -185,7 +188,9 @@ class TodoItemWidget(QFrame):
     def update_timer_display(self, current_time_utc: datetime) -> None:
         is_completed = self.todo_item.get("completed", False)
         self.complete_button.setChecked(is_completed)
-        self.complete_button.setIcon(get_icon(DONE_ICON_PATH, "✓" if is_completed else "○"))
+        icon_path = DONE_ICON_PATH if is_completed else INCOMPLETE_ICON_PATH
+        fallback_char = "✓" if is_completed else "○"
+        self.complete_button.setIcon(get_icon(icon_path, fallback_char))
         self.edit_button.setEnabled(not is_completed)
         self.edit_button.setToolTip("编辑任务" if not is_completed else "已完成任务不可编辑")
 

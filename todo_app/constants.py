@@ -14,6 +14,7 @@ APP_VERSION = "1.6.0"
 APP_ICON_PATH = "assets/icons/app_icon.svg"
 TRAY_ICON_PATH = "assets/icons/tray_icon.svg"
 DONE_ICON_PATH = "assets/icons/done_icon.svg"
+INCOMPLETE_ICON_PATH = "assets/icons/incomplete_icon.svg"
 EDIT_ICON_PATH = "assets/icons/edit_icon.svg"
 DELETE_ICON_PATH = "assets/icons/delete_icon.svg"
 SNOOZE_ICON_PATH = "assets/icons/snooze_icon.svg"
@@ -58,6 +59,7 @@ __all__ = [
     "APP_ICON_PATH",
     "TRAY_ICON_PATH",
     "DONE_ICON_PATH",
+    "INCOMPLETE_ICON_PATH",
     "EDIT_ICON_PATH",
     "DELETE_ICON_PATH",
     "SNOOZE_ICON_PATH",
