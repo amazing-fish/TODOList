@@ -29,6 +29,7 @@ from .constants import (
     APP_ICON_PATH,
     APP_NAME,
     APP_VERSION,
+    ADD_ICON_PATH,
     COLOR_ACCENT,
     COLOR_ACCENT_HOVER,
     COLOR_BACKGROUND,
