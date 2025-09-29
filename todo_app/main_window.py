@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from PySide6.QtCore import QByteArray, QEvent, QSettings, QTimer, Qt, QSize, Slot
 from PySide6.QtMultimedia import QSoundEffect
@@ -325,9 +325,22 @@ class ModernTodoAppWindow(QMainWindow):
             save_todos(self.todos)
             self.update_list_widget()
 
-    @Slot(int)
-    def handle_edit_request(self, todo_id: int) -> None:
-        todo_to_edit = next((t for t in self.todos if t.get("id") == todo_id), None)
+    def _normalize_todo_id(self, raw_id: object) -> Optional[int]:
+        """尝试将传入的任务 ID 规范化为 Python int。"""
+        try:
+            return int(raw_id)
+        except (TypeError, ValueError):
+            print(f"警告: 收到无法识别的任务ID: {raw_id!r}")
+            return None
+
+    @Slot(object)
+    def handle_edit_request(self, todo_id: object) -> None:
+        normalized_id = self._normalize_todo_id(todo_id)
+        if normalized_id is None:
+            QMessageBox.warning(self, "错误", "收到无效的任务标识，无法编辑。")
+            return
+
+        todo_to_edit = next((t for t in self.todos if t.get("id") == normalized_id), None)
         if not todo_to_edit:
             QMessageBox.warning(self, "错误", "无法找到要编辑的任务。")
             return
@@ -336,7 +349,7 @@ class ModernTodoAppWindow(QMainWindow):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             updated_data = dialog.get_task_data()
             for index, todo in enumerate(self.todos):
-                if todo["id"] == todo_id:
+                if todo["id"] == normalized_id:
                     self.todos[index].update(
                         {
                             "text": updated_data["text"],
@@ -349,16 +362,21 @@ class ModernTodoAppWindow(QMainWindow):
                             "lastNotifiedAt": None,
                         }
                     )
-                    if todo_id in self.active_notifications:
-                        self.active_notifications.pop(todo_id).close()
+                    if normalized_id in self.active_notifications:
+                        self.active_notifications.pop(normalized_id).close()
                     break
 
             save_todos(self.todos)
             self.update_list_widget()
 
-    @Slot(int)
-    def handle_delete_request(self, todo_id: int) -> None:
-        todo_to_delete = next((t for t in self.todos if t.get("id") == todo_id), None)
+    @Slot(object)
+    def handle_delete_request(self, todo_id: object) -> None:
+        normalized_id = self._normalize_todo_id(todo_id)
+        if normalized_id is None:
+            QMessageBox.warning(self, "错误", "收到无效的任务标识，无法删除。")
+            return
+
+        todo_to_delete = next((t for t in self.todos if t.get("id") == normalized_id), None)
         item_text = (
             f"待办事项 \"{todo_to_delete['text'][:30]}{'...' if len(todo_to_delete['text']) > 30 else ''}\""
             if todo_to_delete
@@ -374,24 +392,29 @@ class ModernTodoAppWindow(QMainWindow):
             )
             == QMessageBox.StandardButton.Yes
         ):
-            if todo_id in self.active_notifications:
-                self.active_notifications.pop(todo_id).close()
+            if normalized_id in self.active_notifications:
+                self.active_notifications.pop(normalized_id).close()
             original_len = len(self.todos)
-            self.todos = [t for t in self.todos if t.get("id") != todo_id]
+            self.todos = [t for t in self.todos if t.get("id") != normalized_id]
             if len(self.todos) < original_len:
                 save_todos(self.todos)
                 self.update_list_widget()
             else:
-                print(f"警告: 删除任务时未找到ID {todo_id}。")
+                print(f"警告: 删除任务时未找到ID {normalized_id}。")
 
-    @Slot(int)
-    def handle_toggle_complete_request(self, todo_id: int) -> None:
+    @Slot(object)
+    def handle_toggle_complete_request(self, todo_id: object) -> None:
         self.toggle_complete_todo(todo_id)
 
-    def toggle_complete_todo(self, todo_id: int, called_from_notification: bool = False) -> None:
+    def toggle_complete_todo(self, todo_id: object, called_from_notification: bool = False) -> None:
+        normalized_id = self._normalize_todo_id(todo_id)
+        if normalized_id is None:
+            print(f"警告: 尝试切换任务完成状态时收到无效ID: {todo_id!r}")
+            return
+
         changed = False
         for index, todo in enumerate(self.todos):
-            if todo.get("id") == todo_id:
+            if todo.get("id") == normalized_id:
                 is_now_completed = not todo.get("completed", False)
                 self.todos[index]["completed"] = is_now_completed
                 if is_now_completed:
@@ -402,8 +425,8 @@ class ModernTodoAppWindow(QMainWindow):
                             "notifiedForDue": True,
                         }
                     )
-                    if todo_id in self.active_notifications:
-                        self.active_notifications.pop(todo_id).close()
+                    if normalized_id in self.active_notifications:
+                        self.active_notifications.pop(normalized_id).close()
                 else:
                     self.todos[index].update(
                         {
@@ -419,7 +442,7 @@ class ModernTodoAppWindow(QMainWindow):
             save_todos(self.todos)
             self.update_list_widget()
         else:
-            print(f"警告: 切换ID {todo_id} 任务完成状态时未找到。")
+            print(f"警告: 切换ID {normalized_id} 任务完成状态时未找到。")
 
     # --- 列表刷新 ---
     def update_list_widget(self) -> None:

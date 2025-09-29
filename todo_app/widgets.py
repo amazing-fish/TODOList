@@ -36,9 +36,9 @@ from .utils import get_icon, truncate_text_for_width
 class TodoItemWidget(QFrame):
     """待办事项卡片。"""
 
-    request_edit = Signal(int)
-    request_delete = Signal(int)
-    request_toggle_complete = Signal(int)
+    request_edit = Signal(object)
+    request_delete = Signal(object)
+    request_toggle_complete = Signal(object)
 
     def __init__(self, todo_item: dict, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -174,13 +174,13 @@ class TodoItemWidget(QFrame):
             self.task_text_label.setToolTip("")
 
     def _toggle_complete(self) -> None:
-        self.request_toggle_complete.emit(int(self.todo_item["id"]))
+        self.request_toggle_complete.emit(self.todo_item["id"])
 
     def _edit_item(self) -> None:
-        self.request_edit.emit(int(self.todo_item["id"]))
+        self.request_edit.emit(self.todo_item["id"])
 
     def _delete_item(self) -> None:
-        self.request_delete.emit(int(self.todo_item["id"]))
+        self.request_delete.emit(self.todo_item["id"])
 
     def update_timer_display(self, current_time_utc: datetime) -> None:
         is_completed = self.todo_item.get("completed", False)
