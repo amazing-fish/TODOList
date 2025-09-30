@@ -30,10 +30,6 @@ from .constants import (
     APP_NAME,
     APP_VERSION,
     ADD_ICON_PATH,
-    COLOR_ACCENT,
-    COLOR_ACCENT_HOVER,
-    COLOR_BACKGROUND,
-    COLOR_TEXT_SECONDARY,
     DUE_SOUND_PATH,
     REMINDER_SOUND_PATH,
 )
@@ -41,6 +37,7 @@ from .dialogs import NotificationDialog, TaskEditDialog
 from .storage import load_todos, save_todos
 from .utils import get_icon, play_sound_effect
 from .widgets import TodoItemWidget
+from .theme import ThemeColors, get_theme_manager
 
 
 class ModernTodoAppWindow(QMainWindow):
@@ -53,6 +50,10 @@ class ModernTodoAppWindow(QMainWindow):
         self.settings = QSettings("MyProductiveApp", APP_NAME)
         self._quitting_app = False
 
+        self.theme_manager = get_theme_manager()
+        self._palette: ThemeColors = self.theme_manager.current_palette
+        self.theme_manager.theme_changed.connect(self._on_theme_changed)
+
         self.reminder_sound = QSoundEffect(self)
         self.due_sound = QSoundEffect(self)
         self.reminder_sound.setVolume(0.7)
@@ -61,6 +62,7 @@ class ModernTodoAppWindow(QMainWindow):
         self._add_task_dialog: Optional[TaskEditDialog] = None
         self._empty_placeholder_item: Optional[QListWidgetItem] = None
         self._empty_placeholder_widget: Optional[QWidget] = None
+        self._empty_placeholder_label: Optional[QLabel] = None
 
         self._build_ui()
         self._create_tray_icon()
@@ -76,8 +78,6 @@ class ModernTodoAppWindow(QMainWindow):
         self.setWindowTitle(f"{APP_NAME} - v{APP_VERSION}")
         self.setWindowIcon(get_icon(APP_ICON_PATH, "T"))
         self.setMinimumSize(420, 560)
-        self.setStyleSheet(f"QMainWindow {{ background-color: {COLOR_BACKGROUND}; }}")
-
         main_widget = QWidget(self)
         self.setCentralWidget(main_widget)
         main_layout = QVBoxLayout(main_widget)
@@ -87,15 +87,15 @@ class ModernTodoAppWindow(QMainWindow):
         controls_layout = QHBoxLayout()
         controls_layout.setSpacing(10)
 
-        filter_label = QLabel("筛选:")
-        controls_layout.addWidget(filter_label)
+        self.filter_label = QLabel("筛选:")
+        controls_layout.addWidget(self.filter_label)
         self.filter_combo = QComboBox()
         self.filter_combo.addItems(["全部", "未完成", "已完成", "今天到期", "高优先级"])
         self.filter_combo.currentTextChanged.connect(self.update_list_widget)
         controls_layout.addWidget(self.filter_combo, 1)
 
-        sort_label = QLabel("排序:")
-        controls_layout.addWidget(sort_label)
+        self.sort_label = QLabel("排序:")
+        controls_layout.addWidget(self.sort_label)
         self.sort_combo = QComboBox()
         self.sort_combo.addItems(
             ["创建时间 (新->旧)", "创建时间 (旧->新)", "截止日期 (近->远)", "截止日期 (远->近)", "优先级 (高->低)"]
@@ -106,15 +106,6 @@ class ModernTodoAppWindow(QMainWindow):
         self.add_button = QPushButton()
         self.add_button.setToolTip("添加新任务")
         self.add_button.setFixedSize(36, 36)
-        self.add_button.setStyleSheet(
-            f"""
-            QPushButton {{
-                 background-color: {COLOR_ACCENT}; color: white;
-                 border: none; border-radius: 18px; font-weight: bold; font-size: 16pt;
-            }}
-            QPushButton:hover {{ background-color: {COLOR_ACCENT_HOVER}; }}
-            """
-        )
         self.add_button.setIcon(get_icon(ADD_ICON_PATH, "+"))
         self.add_button.setIconSize(QSize(18, 18))
         self.add_button.setAccessibleName("添加任务")
@@ -122,11 +113,8 @@ class ModernTodoAppWindow(QMainWindow):
         controls_layout.addWidget(self.add_button)
         main_layout.addLayout(controls_layout)
 
-        list_label = QLabel("待办列表")
-        list_label.setStyleSheet(
-            "font-size: 13pt; font-weight:bold; color: #1A237E; margin-top: 8px; margin-bottom: 3px;"
-        )
-        main_layout.addWidget(list_label)
+        self.list_label = QLabel("待办列表")
+        main_layout.addWidget(self.list_label)
 
         self.list_widget = QListWidget()
         self.list_widget.setStyleSheet(
@@ -139,6 +127,7 @@ class ModernTodoAppWindow(QMainWindow):
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         main_layout.addWidget(self.list_widget, 1)
         self._apply_global_font()
+        self._apply_palette(self._palette)
 
     def _apply_global_font(self) -> None:
         font_family = "Segoe UI"
@@ -154,6 +143,52 @@ class ModernTodoAppWindow(QMainWindow):
             QApplication.setFont(test_font)
         else:
             QApplication.setFont(QFont("Arial", 10))
+
+    def _apply_palette(self, palette: ThemeColors) -> None:
+        """根据主题配色刷新窗口视觉样式。"""
+
+        self._palette = palette
+        self.setStyleSheet(f"QMainWindow {{ background-color: {palette.background}; }}")
+        self.add_button.setStyleSheet(
+            f"""
+            QPushButton {{
+                 background-color: {palette.accent}; color: {palette.inverse_text};
+                 border: none; border-radius: 18px; font-weight: bold; font-size: 16pt;
+            }}
+            QPushButton:hover {{ background-color: {palette.accent_hover}; }}
+            """
+        )
+        self.list_label.setStyleSheet(
+            f"font-size: 13pt; font-weight:bold; color: {palette.list_label}; margin-top: 8px; margin-bottom: 3px;"
+        )
+        self.filter_label.setStyleSheet(
+            f"color: {palette.text_primary}; font-size: 10pt; background-color: transparent;"
+        )
+        self.sort_label.setStyleSheet(
+            f"color: {palette.text_primary}; font-size: 10pt; background-color: transparent;"
+        )
+        if self._empty_placeholder_label is not None:
+            self._empty_placeholder_label.setStyleSheet(
+                f"color: {palette.text_secondary}; font-style: italic; font-size: 12pt; background-color: transparent;"
+            )
+
+    def _refresh_item_widgets_palette(self, palette: ThemeColors) -> None:
+        """遍历所有待办卡片并刷新其配色。"""
+
+        for index in range(self.list_widget.count()):
+            list_item = self.list_widget.item(index)
+            if not list_item:
+                continue
+            item_widget = self.list_widget.itemWidget(list_item)
+            if isinstance(item_widget, TodoItemWidget):
+                item_widget.apply_palette(palette)
+
+    @Slot(ThemeColors)
+    def _on_theme_changed(self, palette: ThemeColors) -> None:
+        """系统主题变化后重新应用配色。"""
+
+        self._apply_palette(palette)
+        self._refresh_item_widgets_palette(palette)
 
     # --- 主循环刷新 ---
     def tick_update(self) -> None:
@@ -478,11 +513,12 @@ class ModernTodoAppWindow(QMainWindow):
 
         self._empty_placeholder_item = None
         self._empty_placeholder_widget = None
+        self._empty_placeholder_label = None
 
         current_time_utc = datetime.now(timezone.utc)
         for todo_data in processed:
             list_item = QListWidgetItem(self.list_widget)
-            item_widget = TodoItemWidget(todo_data.copy())
+            item_widget = TodoItemWidget(todo_data.copy(), palette=self._palette)
             item_widget.request_edit.connect(self.handle_edit_request)
             item_widget.request_delete.connect(self.handle_delete_request)
             item_widget.request_toggle_complete.connect(self.handle_toggle_complete_request)
@@ -502,9 +538,6 @@ class ModernTodoAppWindow(QMainWindow):
 
         empty_label = QLabel("🎉 暂无待办事项！")
         empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        empty_label.setStyleSheet(
-            f"color: {COLOR_TEXT_SECONDARY}; font-style: italic; font-size: 12pt; background-color: transparent;"
-        )
         empty_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         container_layout.addWidget(empty_label, alignment=Qt.AlignmentFlag.AlignCenter)
         container_layout.addStretch()
@@ -514,6 +547,8 @@ class ModernTodoAppWindow(QMainWindow):
 
         self._empty_placeholder_item = empty_item
         self._empty_placeholder_widget = empty_container
+        self._empty_placeholder_label = empty_label
+        self._apply_palette(self._palette)
         self._update_empty_placeholder_geometry()
         QTimer.singleShot(0, self._update_empty_placeholder_geometry)
 

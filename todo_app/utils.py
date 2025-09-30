@@ -11,10 +11,8 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPixmap
 from PySide6.QtMultimedia import QSoundEffect
 from PySide6.QtWidgets import QApplication
 
-from .constants import (
-    COLOR_TEXT_SECONDARY,
-    DEFAULT_ICON_SIZE,
-)
+from .constants import DEFAULT_ICON_SIZE
+from .theme import get_current_palette
 
 _warned_icon_paths: set[str] = set()
 _warned_sound_paths: set[str] = set()
@@ -35,7 +33,7 @@ def get_icon(icon_path: str, fallback_char: str = "●", size: QSize | None = No
     pixmap = QPixmap(icon_size)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
-    painter.setPen(QColor(COLOR_TEXT_SECONDARY))
+    painter.setPen(QColor(get_current_palette().text_secondary))
     font = QFont()
     font.setPointSize(max(8, int(icon_size.height() * 0.7)))
     painter.setFont(font)
