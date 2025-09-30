@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, time, timezone
 from typing import Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Slot
 from PySide6.QtWidgets import (
     QCalendarWidget,
     QDateTimeEdit,
@@ -24,16 +24,11 @@ from PySide6.QtWidgets import (
 from .constants import (
     APP_ICON_PATH,
     CALENDAR_ICON_PATH,
-    COLOR_ACCENT,
-    COLOR_ACCENT_HOVER,
-    COLOR_BACKGROUND,
-    COLOR_PRIORITY_MEDIUM,
-    COLOR_TEXT_PRIMARY,
-    COLOR_TEXT_SECONDARY,
     REMINDER_OPTIONS_MAP,
     REMINDER_SECONDS_TO_TEXT_MAP,
 )
 from .utils import get_icon
+from .theme import ThemeColors, get_theme_manager
 
 
 class NotificationDialog(QDialog):
@@ -43,66 +38,42 @@ class NotificationDialog(QDialog):
         super().__init__(parent)
         self.todo_item = todo_item
         self.snooze_duration: Optional[timedelta] = None
+        self._theme_manager = get_theme_manager()
+        self._palette: ThemeColors = self._theme_manager.current_palette
+        self._theme_manager.theme_changed.connect(self._on_theme_changed)
         self._build_ui(parent)
+        self._apply_palette(self._palette)
 
     def _build_ui(self, parent=None) -> None:
         self.setWindowTitle("任务提醒")
         self.setWindowIcon(get_icon(APP_ICON_PATH, "🔔"))
         self.setMinimumWidth(350)
-        self.setStyleSheet(
-            f"""
-            QDialog {{ background-color: {COLOR_BACKGROUND}; border: 1px solid #B0BEC5; border-radius: 8px; }}
-            QLabel {{ color: {COLOR_TEXT_PRIMARY}; font-size: 11pt; }}
-            QPushButton {{
-                background-color: {COLOR_ACCENT}; color: white; border: none;
-                padding: 8px 12px; border-radius: 4px; font-size: 10pt;
-            }}
-            QPushButton:hover {{ background-color: {COLOR_ACCENT_HOVER}; }}
-            QPushButton#snoozeDefaultButton, QPushButton#snoozeMenuButton {{
-                background-color: {COLOR_PRIORITY_MEDIUM};
-                padding-top: 8px;
-                padding-bottom: 8px;
-            }}
-            QPushButton#snoozeDefaultButton:hover, QPushButton#snoozeMenuButton:hover {{
-                background-color: #EF6C00;
-            }}
-            QPushButton#snoozeDefaultButton {{
-                border-top-right-radius: 0px;
-                border-bottom-right-radius: 0px;
-                padding-left: 12px;
-                padding-right: 12px;
-            }}
-            QPushButton#snoozeMenuButton {{
-                border-top-left-radius: 0px;
-                border-bottom-left-radius: 0px;
-                padding-left: 6px;
-                padding-right: 6px;
-            }}
-            QPushButton#snoozeMenuButton::menu-indicator {{ image: none; }}
-            """
-        )
 
         layout = QVBoxLayout(self)
         layout.setSpacing(15)
         layout.setContentsMargins(20, 20, 20, 20)
 
-        title_label = QLabel("<b>任务到期提醒</b>")
-        title_label.setStyleSheet("font-size: 14pt; color: #BF360C;")
-        layout.addWidget(title_label)
+        self.title_label = QLabel("<b>任务到期提醒</b>")
+        layout.addWidget(self.title_label)
 
-        text_label = QLabel(f"任务: <b>{self.todo_item['text']}</b>")
-        text_label.setWordWrap(True)
-        layout.addWidget(text_label)
+        self.text_label = QLabel(f"任务: <b>{self.todo_item['text']}</b>")
+        self.text_label.setWordWrap(True)
+        layout.addWidget(self.text_label)
 
         if self.todo_item.get("dueDate"):
             try:
                 due_date = datetime.fromisoformat(self.todo_item["dueDate"].replace("Z", "+00:00"))
-                due_label = QLabel(f"截止时间: {due_date.astimezone().strftime('%Y-%m-%d %H:%M')}")
-                layout.addWidget(due_label)
+                self.due_label = QLabel(
+                    f"截止时间: {due_date.astimezone().strftime('%Y-%m-%d %H:%M')}"
+                )
+                layout.addWidget(self.due_label)
             except ValueError:
                 print(
                     f"提醒对话框中任务 '{self.todo_item['text']}' 的截止日期格式无效: {self.todo_item['dueDate']}"
                 )
+                self.due_label = None
+        else:
+            self.due_label = None
 
         button_layout = QHBoxLayout()
         self.complete_button = QPushButton(get_icon("", "✓"), "标记为完成")
@@ -148,6 +119,57 @@ class NotificationDialog(QDialog):
                 y = screen_geo.bottom() - self.height() - 20
                 self.move(max(screen_geo.left(), x), max(screen_geo.top(), y))
 
+    def _apply_palette(self, palette: ThemeColors) -> None:
+        self._palette = palette
+        self.setStyleSheet(
+            f"""
+            QDialog {{
+                background-color: {palette.background};
+                border: 1px solid {palette.card_border};
+                border-radius: 8px;
+            }}
+            QLabel {{ color: {palette.text_primary}; font-size: 11pt; }}
+            QPushButton {{
+                background-color: {palette.accent}; color: {palette.inverse_text}; border: none;
+                padding: 8px 12px; border-radius: 4px; font-size: 10pt;
+            }}
+            QPushButton:hover {{ background-color: {palette.accent_hover}; }}
+            QPushButton#snoozeDefaultButton, QPushButton#snoozeMenuButton {{
+                background-color: {palette.priority_medium};
+                color: {palette.inverse_text};
+                padding-top: 8px;
+                padding-bottom: 8px;
+            }}
+            QPushButton#snoozeDefaultButton:hover, QPushButton#snoozeMenuButton:hover {{
+                background-color: {palette.due_warning};
+            }}
+            QPushButton#snoozeDefaultButton {{
+                border-top-right-radius: 0px;
+                border-bottom-right-radius: 0px;
+                padding-left: 12px;
+                padding-right: 12px;
+            }}
+            QPushButton#snoozeMenuButton {{
+                border-top-left-radius: 0px;
+                border-bottom-left-radius: 0px;
+                padding-left: 6px;
+                padding-right: 6px;
+            }}
+            QPushButton#snoozeMenuButton::menu-indicator {{ image: none; }}
+            """
+        )
+        self.title_label.setStyleSheet(
+            f"font-size: 14pt; color: {palette.due_warning}; font-weight: bold;"
+        )
+        if self.due_label is not None:
+            self.due_label.setStyleSheet(
+                f"font-size: 10pt; color: {palette.text_secondary};"
+            )
+
+    @Slot(ThemeColors)
+    def _on_theme_changed(self, palette: ThemeColors) -> None:
+        self._apply_palette(palette)
+
     def _set_snooze_and_close(self, duration: timedelta) -> None:
         self.snooze_duration = duration
         self.done(QDialog.DialogCode.Accepted + 1)
@@ -181,6 +203,9 @@ class TaskEditDialog(QDialog):
         self.todo_item = todo_item
         self._internal_due_date = None
         self.time_edit: Optional[QDateTimeEdit] = None
+        self._theme_manager = get_theme_manager()
+        self._palette: ThemeColors = self._theme_manager.current_palette
+        self._theme_manager.theme_changed.connect(self._on_theme_changed)
         self._build_ui()
         if self.todo_item:
             self.setWindowTitle("编辑待办事项")
@@ -194,26 +219,6 @@ class TaskEditDialog(QDialog):
 
         self.setMinimumWidth(500)
         self.setWindowIcon(get_icon(APP_ICON_PATH, "T"))
-        self.setStyleSheet(
-            f"""
-            QDialog {{ background-color: {COLOR_BACKGROUND}; }}
-            QLabel {{ font-size: 10pt; color: {COLOR_TEXT_PRIMARY}; }}
-            QTextEdit, QComboBox, QDateTimeEdit {{
-                padding: 9px; border: 1px solid #B0BEC5; border-radius: 4px;
-                font-size: 10pt; background-color: #FFFFFF;
-            }}
-            QTextEdit:focus, QComboBox:focus, QDateTimeEdit:focus {{
-                border: 1.5px solid {COLOR_ACCENT};
-            }}
-            QPushButton#pickDateButton {{
-                padding: 7px; border: 1px solid #B0BEC5; border-radius: 4px; background-color: #FAFAFA;
-            }}
-            QPushButton#pickDateButton:hover {{ background-color: #E0E0E0; }}
-            QLabel#selectedDateLabel {{
-                 padding: 9px; border: 1px solid #B0BEC5; border-radius: 4px; background-color: #FAFAFA;
-            }}
-            """
-        )
         layout = QVBoxLayout(self)
         layout.setSpacing(15)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -252,6 +257,7 @@ class TaskEditDialog(QDialog):
         due_date_layout.setContentsMargins(0, 0, 0, 0)
 
         self.set_due_date_button = QPushButton("设置截止时间")
+        self.set_due_date_button.setObjectName("setDueDateButton")
         self.set_due_date_button.setCheckable(True)
         self.set_due_date_button.toggled.connect(self.toggle_due_date_controls)
         due_date_layout.addWidget(self.set_due_date_button)
@@ -296,6 +302,56 @@ class TaskEditDialog(QDialog):
             self.time_edit.setDateTime(QDateTime(QDate.currentDate(), default_qtime))
 
         self.resize(400, 300)
+        self._apply_palette(self._palette)
+
+    def _apply_palette(self, palette: ThemeColors) -> None:
+        self._palette = palette
+        self.setStyleSheet(
+            f"""
+            QDialog {{ background-color: {palette.background}; }}
+            QLabel {{ font-size: 10pt; color: {palette.text_primary}; }}
+            QTextEdit, QComboBox, QDateTimeEdit {{
+                padding: 9px; border: 1px solid {palette.input_border}; border-radius: 4px;
+                font-size: 10pt; background-color: {palette.input_background};
+                color: {palette.text_primary};
+            }}
+            QTextEdit:focus, QComboBox:focus, QDateTimeEdit:focus {{
+                border: 1.5px solid {palette.accent};
+            }}
+            QPushButton#pickDateButton {{
+                padding: 7px; border: 1px solid {palette.input_border}; border-radius: 4px;
+                background-color: {palette.secondary_background};
+                color: {palette.text_primary};
+            }}
+            QPushButton#pickDateButton:hover {{ background-color: {palette.action_hover_bg}; }}
+            QLabel#selectedDateLabel {{
+                 padding: 9px; border: 1px solid {palette.input_border}; border-radius: 4px;
+                 background-color: {palette.secondary_background};
+                 color: {palette.text_secondary};
+            }}
+            QPushButton#setDueDateButton {{
+                background-color: {palette.accent};
+                color: {palette.inverse_text};
+                border: none;
+                padding: 8px 12px;
+                border-radius: 4px;
+            }}
+            QPushButton#setDueDateButton:checked {{
+                background-color: {palette.accent_hover};
+            }}
+            QDialogButtonBox QPushButton {{
+                background-color: {palette.accent};
+                color: {palette.inverse_text};
+                border-radius: 4px;
+                padding: 6px 14px;
+            }}
+            QDialogButtonBox QPushButton:hover {{ background-color: {palette.accent_hover}; }}
+            """
+        )
+
+    @Slot(ThemeColors)
+    def _on_theme_changed(self, palette: ThemeColors) -> None:
+        self._apply_palette(palette)
 
     def populate_fields(self) -> None:
         if not self.todo_item:
@@ -378,6 +434,23 @@ class TaskEditDialog(QDialog):
         button_box.rejected.connect(calendar_dialog.reject)
         layout.addWidget(calendar_widget)
         layout.addWidget(button_box)
+
+        calendar_dialog.setStyleSheet(
+            f"""
+            QDialog {{ background-color: {self._palette.background}; color: {self._palette.text_primary}; }}
+            QCalendarWidget QWidget {{
+                background-color: {self._palette.secondary_background};
+                color: {self._palette.text_primary};
+            }}
+            QPushButton {{
+                background-color: {self._palette.accent};
+                color: {self._palette.inverse_text};
+                border-radius: 4px;
+                padding: 6px 14px;
+            }}
+            QPushButton:hover {{ background-color: {self._palette.accent_hover}; }}
+            """
+        )
 
         if calendar_dialog.exec():
             self._internal_due_date = calendar_widget.selectedDate()
