@@ -16,22 +16,13 @@ from PySide6.QtWidgets import (
 )
 
 from .constants import (
-    COLOR_COMPLETED_ITEM_BG,
-    COLOR_DUE_CRITICAL,
-    COLOR_DUE_WARNING,
-    COLOR_PRIMARY_ITEM_BG,
-    COLOR_PRIORITY_HIGH,
-    COLOR_PRIORITY_LOW,
-    COLOR_PRIORITY_MEDIUM,
-    COLOR_TEXT_COMPLETED,
-    COLOR_TEXT_PRIMARY,
-    COLOR_TEXT_SECONDARY,
     DELETE_ICON_PATH,
     DONE_ICON_PATH,
     EDIT_ICON_PATH,
     INCOMPLETE_ICON_PATH,
 )
 from .utils import get_icon, truncate_text_for_width
+from .theme import ThemeColors, get_theme_manager
 
 
 class TodoItemWidget(QFrame):
@@ -41,33 +32,21 @@ class TodoItemWidget(QFrame):
     request_delete = Signal(object)
     request_toggle_complete = Signal(object)
 
-    def __init__(self, todo_item: dict, parent: Optional[QWidget] = None):
+    def __init__(
+        self, todo_item: dict, parent: Optional[QWidget] = None, *, palette: Optional[ThemeColors] = None
+    ):
         super().__init__(parent)
         self.todo_item = todo_item
         self.original_text = todo_item.get("text", "无内容")
+        self._theme_manager = get_theme_manager()
+        self._palette: ThemeColors = palette or self._theme_manager.current_palette
         self._build_ui()
+        self.apply_palette(self._palette)
 
     def _build_ui(self) -> None:
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setFrameShadow(QFrame.Shadow.Raised)
         self.setObjectName("TodoItemWidget")
-
-        is_completed = self.todo_item.get("completed", False)
-        bg_color = COLOR_COMPLETED_ITEM_BG if is_completed else COLOR_PRIMARY_ITEM_BG
-        text_color = COLOR_TEXT_COMPLETED if is_completed else COLOR_TEXT_PRIMARY
-        text_decoration = "text-decoration: line-through;" if is_completed else ""
-
-        self.setStyleSheet(
-            f"""
-            QFrame#TodoItemWidget {{
-                background-color: {bg_color}; border: 1px solid #CFD8DC;
-                border-radius: 6px; padding: 12px; margin-bottom: 8px;
-            }}
-            QLabel {{ background-color: transparent; }}
-            QPushButton {{ background-color: transparent; border: none; padding: 4px; }}
-            QPushButton:hover {{ background-color: #B0BEC5; border-radius: 3px; }}
-            """
-        )
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -75,9 +54,9 @@ class TodoItemWidget(QFrame):
 
         self.complete_button = QPushButton()
         self.complete_button.setCheckable(True)
-        self.complete_button.setChecked(is_completed)
-        icon_path = DONE_ICON_PATH if is_completed else INCOMPLETE_ICON_PATH
-        fallback_char = "✓" if is_completed else "○"
+        self.complete_button.setChecked(self.todo_item.get("completed", False))
+        icon_path = DONE_ICON_PATH if self.todo_item.get("completed", False) else INCOMPLETE_ICON_PATH
+        fallback_char = "✓" if self.todo_item.get("completed", False) else "○"
         self.complete_button.setIcon(get_icon(icon_path, fallback_char))
         self.complete_button.setIconSize(QSize(20, 20))
         self.complete_button.setToolTip("标记为完成/未完成")
@@ -89,17 +68,11 @@ class TodoItemWidget(QFrame):
         self.task_text_label = QLabel(self.original_text)
         self.task_text_label.setWordWrap(False)
         font = QFont("Segoe UI", 11)
-        font.setBold(not is_completed)
+        font.setBold(not self.todo_item.get("completed", False))
         self.task_text_label.setFont(font)
-        self.task_text_label.setStyleSheet(f"color: {text_color}; {text_decoration}")
 
         priority = self.todo_item.get("priority", "中")
-        p_color = {"高": COLOR_PRIORITY_HIGH, "中": COLOR_PRIORITY_MEDIUM, "低": COLOR_PRIORITY_LOW}.get(
-            priority, COLOR_TEXT_SECONDARY
-        )
-        self.priority_label = QLabel(
-            f"<span style='color:white; background-color:{p_color}; padding:2px 6px; border-radius:3px; font-size:8pt;'>{priority}</span>"
-        )
+        self.priority_label = QLabel(priority)
         self.priority_label.setTextFormat(Qt.TextFormat.RichText)
         content_layout.addWidget(self.task_text_label)
         content_layout.addWidget(self.priority_label)
@@ -108,7 +81,6 @@ class TodoItemWidget(QFrame):
         self.timer_display_label = QLabel("无计时")
         self.timer_display_label.setMinimumWidth(80)
         self.timer_display_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.timer_display_label.setStyleSheet(f"font-size: 9pt; color: {COLOR_TEXT_SECONDARY}; {text_decoration}")
         main_layout.addWidget(self.timer_display_label)
 
         self.actions_container = QWidget()
@@ -120,7 +92,7 @@ class TodoItemWidget(QFrame):
         self.edit_button.setIconSize(QSize(18, 18))
         self.edit_button.setToolTip("编辑任务")
         self.edit_button.clicked.connect(self._edit_item)
-        self.edit_button.setEnabled(not is_completed)
+        self.edit_button.setEnabled(not self.todo_item.get("completed", False))
 
         self.delete_button = QPushButton(icon=get_icon(DELETE_ICON_PATH, "🗑"))
         self.delete_button.setIconSize(QSize(18, 18))
@@ -137,6 +109,56 @@ class TodoItemWidget(QFrame):
 
         self.update_timer_display(datetime.now(timezone.utc))
         self.update_text_display()
+
+    def apply_palette(self, palette: ThemeColors) -> None:
+        """应用指定主题配色。"""
+
+        self._palette = palette
+        self._update_frame_background()
+        is_completed = self.todo_item.get("completed", False)
+        font = self.task_text_label.font()
+        font.setBold(not is_completed)
+        self.task_text_label.setFont(font)
+        text_decoration = "text-decoration: line-through;" if is_completed else "text-decoration: none;"
+        text_color = palette.text_completed if is_completed else palette.text_primary
+        self.task_text_label.setStyleSheet(f"color: {text_color}; {text_decoration}")
+
+        self.priority_label.setText(self._priority_badge_html(self.todo_item.get("priority", "中")))
+        self.priority_label.setTextFormat(Qt.TextFormat.RichText)
+
+        self.edit_button.setEnabled(not is_completed)
+        self.timer_display_label.setStyleSheet(
+            f"font-size: 9pt; color: {palette.text_secondary}; {text_decoration}"
+        )
+        self.update_timer_display(datetime.now(timezone.utc))
+
+    def _update_frame_background(self) -> None:
+        is_completed = self.todo_item.get("completed", False)
+        bg_color = self._palette.completed_item_bg if is_completed else self._palette.primary_item_bg
+        self.setStyleSheet(
+            f"""
+            QFrame#TodoItemWidget {{
+                background-color: {bg_color}; border: 1px solid {self._palette.card_border};
+                border-radius: 6px; padding: 12px; margin-bottom: 8px;
+            }}
+            QLabel {{ background-color: transparent; }}
+            QPushButton {{ background-color: transparent; border: none; padding: 4px; }}
+            QPushButton:hover {{ background-color: {self._palette.action_hover_bg}; border-radius: 3px; }}
+            """
+        )
+
+    def _priority_badge_html(self, priority: str) -> str:
+        colors = {
+            "高": self._palette.priority_high,
+            "中": self._palette.priority_medium,
+            "低": self._palette.priority_low,
+        }
+        background = colors.get(priority, self._palette.secondary_background)
+        text_color = self._palette.inverse_text if priority in colors else self._palette.text_primary
+        return (
+            "<span style='color:{text}; background-color:{bg}; padding:2px 6px; "
+            "border-radius:3px; font-size:8pt;'>{content}</span>"
+        ).format(text=text_color, bg=background, content=priority)
 
     def enterEvent(self, event: QEvent) -> None:  # noqa: N802
         self.actions_container.setVisible(True)
@@ -193,21 +215,23 @@ class TodoItemWidget(QFrame):
         self.complete_button.setIcon(get_icon(icon_path, fallback_char))
         self.edit_button.setEnabled(not is_completed)
         self.edit_button.setToolTip("编辑任务" if not is_completed else "已完成任务不可编辑")
+        self._update_frame_background()
 
-        text_color = COLOR_TEXT_COMPLETED if is_completed else COLOR_TEXT_PRIMARY
+        text_color = self._palette.text_completed if is_completed else self._palette.text_primary
         text_decoration = "text-decoration: line-through;" if is_completed else "text-decoration: none;"
         self.task_text_label.setStyleSheet(f"color: {text_color}; {text_decoration}")
         font = self.task_text_label.font()
         font.setBold(not is_completed)
         self.task_text_label.setFont(font)
+        base_timer_color = self._palette.text_completed if is_completed else self._palette.text_secondary
         self.timer_display_label.setStyleSheet(
-            f"font-size: 9pt; color: {COLOR_TEXT_COMPLETED if is_completed else COLOR_TEXT_SECONDARY}; {text_decoration}"
+            f"font-size: 9pt; color: {base_timer_color}; {text_decoration}"
         )
 
         if is_completed:
             self.timer_display_label.setText("已完成")
             self.timer_display_label.setStyleSheet(
-                f"font-size: 9pt; color: {COLOR_TEXT_COMPLETED}; font-style: italic; {text_decoration}"
+                f"font-size: 9pt; color: {self._palette.text_completed}; font-style: italic; {text_decoration}"
             )
             self.update_text_display()
             return
@@ -220,7 +244,9 @@ class TodoItemWidget(QFrame):
                     self.timer_display_label.setText(
                         f"推迟: {self._format_timedelta(snooze_until_dt - current_time_utc)}"
                     )
-                    self.timer_display_label.setStyleSheet("font-size: 9pt; color: #FF9800;")
+                    self.timer_display_label.setStyleSheet(
+                        f"font-size: 9pt; color: {self._palette.snooze_badge};"
+                    )
                     self.update_text_display()
                     return
             except ValueError:
@@ -230,7 +256,9 @@ class TodoItemWidget(QFrame):
         due_date_str = self.todo_item.get("dueDate")
         if not due_date_str:
             self.timer_display_label.setText("无截止日期")
-            self.timer_display_label.setStyleSheet(f"font-size: 9pt; color: {COLOR_TEXT_SECONDARY};")
+            self.timer_display_label.setStyleSheet(
+                f"font-size: 9pt; color: {self._palette.text_secondary};"
+            )
             self.update_text_display()
             return
 
@@ -247,11 +275,11 @@ class TodoItemWidget(QFrame):
         if diff.total_seconds() <= 0:
             self.timer_display_label.setText(f"已到期 ({time_left_str.replace('-', '')})")
             self.timer_display_label.setStyleSheet(
-                f"font-size: 10pt; color: {COLOR_DUE_CRITICAL}; font-weight: bold;"
+                f"font-size: 10pt; color: {self._palette.due_critical}; font-weight: bold;"
             )
         else:
             self.timer_display_label.setText(f"剩余: {time_left_str}")
-            color = COLOR_DUE_WARNING if diff.total_seconds() < 86400 else "#2E7D32"
+            color = self._palette.due_warning if diff.total_seconds() < 86400 else self._palette.timer_positive
             self.timer_display_label.setStyleSheet(f"font-size: 9pt; color: {color}; font-weight: bold;")
 
         self.update_text_display()
