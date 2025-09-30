@@ -58,6 +58,10 @@ class ModernTodoAppWindow(QMainWindow):
         self.reminder_sound.setVolume(0.7)
         self.due_sound.setVolume(0.8)
 
+        self._add_task_dialog: Optional[TaskEditDialog] = None
+        self._empty_placeholder_item: Optional[QListWidgetItem] = None
+        self._empty_placeholder_widget: Optional[QWidget] = None
+
         self._build_ui()
         self._create_tray_icon()
         self.update_list_widget()
@@ -71,7 +75,7 @@ class ModernTodoAppWindow(QMainWindow):
     def _build_ui(self) -> None:
         self.setWindowTitle(f"{APP_NAME} - v{APP_VERSION}")
         self.setWindowIcon(get_icon(APP_ICON_PATH, "T"))
-        self.setMinimumSize(320, 400)
+        self.setMinimumSize(420, 560)
         self.setStyleSheet(f"QMainWindow {{ background-color: {COLOR_BACKGROUND}; }}")
 
         main_widget = QWidget(self)
@@ -300,34 +304,46 @@ class ModernTodoAppWindow(QMainWindow):
 
     # --- 任务操作 ---
     def show_add_task_dialog(self) -> None:
+        if self._add_task_dialog and self._add_task_dialog.isVisible():
+            if self._add_task_dialog.isMinimized():
+                self._add_task_dialog.showNormal()
+            self._add_task_dialog.raise_()
+            self._add_task_dialog.activateWindow()
+            return
+
         dialog = TaskEditDialog(parent=self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            new_data = dialog.get_task_data()
+        self._add_task_dialog = dialog
+        try:
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                new_data = dialog.get_task_data()
 
-            current_ids = [t["id"] for t in self.todos if isinstance(t.get("id"), int)]
-            max_id = max(current_ids) if current_ids else 0
-            new_id_time = int(datetime.now(timezone.utc).timestamp() * 1000)
-            new_id = max(new_id_time, max_id + 1)
-            existing_ids = set(current_ids)
-            while new_id in existing_ids:
-                new_id += 1
+                current_ids = [t["id"] for t in self.todos if isinstance(t.get("id"), int)]
+                max_id = max(current_ids) if current_ids else 0
+                new_id_time = int(datetime.now(timezone.utc).timestamp() * 1000)
+                new_id = max(new_id_time, max_id + 1)
+                existing_ids = set(current_ids)
+                while new_id in existing_ids:
+                    new_id += 1
 
-            new_todo = {
-                "id": new_id,
-                "text": new_data["text"],
-                "priority": new_data["priority"],
-                "dueDate": new_data["dueDate"],
-                "reminderOffset": new_data["reminderOffset"],
-                "completed": False,
-                "createdAt": datetime.now(timezone.utc).isoformat(),
-                "snoozeUntil": None,
-                "notifiedForReminder": False,
-                "notifiedForDue": False,
-                "lastNotifiedAt": None,
-            }
-            self.todos.append(new_todo)
-            save_todos(self.todos)
-            self.update_list_widget()
+                new_todo = {
+                    "id": new_id,
+                    "text": new_data["text"],
+                    "priority": new_data["priority"],
+                    "dueDate": new_data["dueDate"],
+                    "reminderOffset": new_data["reminderOffset"],
+                    "completed": False,
+                    "createdAt": datetime.now(timezone.utc).isoformat(),
+                    "snoozeUntil": None,
+                    "notifiedForReminder": False,
+                    "notifiedForDue": False,
+                    "lastNotifiedAt": None,
+                }
+                self.todos.append(new_todo)
+                save_todos(self.todos)
+                self.update_list_widget()
+        finally:
+            if self._add_task_dialog is dialog:
+                self._add_task_dialog = None
 
     def _normalize_todo_id(self, raw_id: object) -> Optional[int]:
         """尝试将传入的任务 ID 规范化为 Python int。"""
@@ -460,6 +476,9 @@ class ModernTodoAppWindow(QMainWindow):
             self._show_empty_list_message()
             return
 
+        self._empty_placeholder_item = None
+        self._empty_placeholder_widget = None
+
         current_time_utc = datetime.now(timezone.utc)
         for todo_data in processed:
             list_item = QListWidgetItem(self.list_widget)
@@ -490,10 +509,13 @@ class ModernTodoAppWindow(QMainWindow):
         container_layout.addWidget(empty_label, alignment=Qt.AlignmentFlag.AlignCenter)
         container_layout.addStretch()
 
-        viewport_size = self.list_widget.viewport().size() if self.list_widget.viewport() else self.list_widget.size()
-        empty_item.setSizeHint(QSize(max(viewport_size.width() - 10, 200), max(viewport_size.height(), 160)))
         self.list_widget.addItem(empty_item)
         self.list_widget.setItemWidget(empty_item, empty_container)
+
+        self._empty_placeholder_item = empty_item
+        self._empty_placeholder_widget = empty_container
+        self._update_empty_placeholder_geometry()
+        QTimer.singleShot(0, self._update_empty_placeholder_geometry)
 
     def _filter_todos(self, todos_list: List[dict]) -> List[dict]:
         filter_text = self.filter_combo.currentText()
@@ -609,7 +631,14 @@ class ModernTodoAppWindow(QMainWindow):
     def restore_geometry_and_state(self) -> None:
         geom_bytes = self.settings.value("geometry")
         state_bytes = self.settings.value("windowState")
-        default_size = QSize(420, 600)
+        screen = QApplication.primaryScreen()
+        if screen:
+            available = screen.availableGeometry()
+            default_width = min(max(int(available.width() * 0.35), 480), int(available.width() * 0.5))
+            default_height = min(max(int(available.height() * 0.55), 680), int(available.height() * 0.75))
+        else:
+            default_width, default_height = 480, 680
+        default_size = QSize(default_width, default_height)
         restored_geom = False
         if isinstance(geom_bytes, QByteArray) and not geom_bytes.isEmpty():
             restored_geom = bool(self.restoreGeometry(geom_bytes))
@@ -644,6 +673,25 @@ class ModernTodoAppWindow(QMainWindow):
             self._center_window()
             if self.isMinimized() or not self.isVisible():
                 self.showNormal()
+
+    def _update_empty_placeholder_geometry(self) -> None:
+        if not self._empty_placeholder_item or not self._empty_placeholder_widget:
+            return
+
+        viewport = self.list_widget.viewport() if self.list_widget else None
+        viewport_size = viewport.size() if viewport else self.list_widget.size()
+        width = max(viewport_size.width() - 10, 200)
+        height = max(viewport_size.height(), 160)
+        self._empty_placeholder_item.setSizeHint(QSize(width, height))
+        self._empty_placeholder_widget.setMinimumSize(width, height)
+
+    def resizeEvent(self, event: QEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._update_empty_placeholder_geometry()
+
+    def showEvent(self, event: QEvent) -> None:  # noqa: N802
+        super().showEvent(event)
+        QTimer.singleShot(0, self._update_empty_placeholder_geometry)
 
     # --- 关闭流程 ---
     def closeEvent(self, event: QEvent) -> None:  # noqa: N802
