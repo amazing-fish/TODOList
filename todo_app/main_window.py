@@ -193,7 +193,7 @@ class ModernTodoAppWindow(QMainWindow):
         if combo is None:
             return
 
-        combo.setMinimumHeight(28)
+        combo.setMinimumHeight(26)
         combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         combo.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -207,9 +207,9 @@ class ModernTodoAppWindow(QMainWindow):
                     background-color: {palette.input_background};
                     color: {palette.text_primary};
                     border: 1px solid {palette.input_border};
-                    border-radius: 6px;
-                    padding: 4px 28px 4px 10px;
-                    min-height: 28px;
+                    border-radius: 4px;
+                    padding: 2px 22px 2px 8px;
+                    min-height: 26px;
                 }}
                 QComboBox:focus {{
                     border-color: {palette.accent};
@@ -222,22 +222,16 @@ class ModernTodoAppWindow(QMainWindow):
                     background-color: {palette.secondary_background};
                 }}
                 QComboBox::drop-down {{
-                    subcontrol-origin: content;
+                    subcontrol-origin: padding;
                     subcontrol-position: center right;
-                    width: 24px;
-                    border-top-right-radius: 6px;
-                    border-bottom-right-radius: 6px;
-                    background-color: {palette.input_background};
-                    border-left: 1px solid {palette.input_border};
-                    margin-right: 2px;
-                }}
-                QComboBox::drop-down:hover {{
-                    background-color: {palette.secondary_background};
+                    width: 18px;
+                    border: none;
+                    background-color: transparent;
                 }}
                 QComboBox::down-arrow {{
                     image: url('{arrow_normal}');
-                    width: 12px;
-                    height: 7px;
+                    width: 10px;
+                    height: 6px;
                 }}
                 QComboBox::down-arrow:disabled {{
                     image: url('{arrow_disabled}');
@@ -247,15 +241,15 @@ class ModernTodoAppWindow(QMainWindow):
                     background-color: {palette.secondary_background};
                     color: {palette.text_primary};
                     border: 1px solid {palette.input_border};
-                    border-radius: 6px;
-                    padding: 4px 0px;
+                    border-radius: 4px;
+                    padding: 3px 0px;
                     selection-background-color: {palette.accent};
                     selection-color: {palette.inverse_text};
                     outline: 0;
                 }}
                 QComboBox QListView::item,
                 QComboBox QAbstractItemView::item {{
-                    padding: 4px 12px;
+                    padding: 3px 10px;
                     margin: 0px;
                 }}
                 QComboBox QListView::item:hover,
