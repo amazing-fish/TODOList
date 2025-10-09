@@ -5,6 +5,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 from urllib.parse import quote
+from textwrap import dedent
 
 from PySide6.QtCore import QByteArray, QEvent, QSettings, QTimer, Qt, QSize, Slot
 from PySide6.QtMultimedia import QSoundEffect
@@ -192,49 +193,69 @@ class ModernTodoAppWindow(QMainWindow):
         if combo is None:
             return
 
+        combo.setMinimumHeight(34)
+        combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
         arrow_normal = self._build_combo_arrow_uri(palette.text_primary)
         arrow_disabled = self._build_combo_arrow_uri(palette.text_secondary)
+
         combo.setStyleSheet(
-            f"""
-            QComboBox {{
-                background-color: {palette.input_background};
-                color: {palette.text_primary};
-                border: 1px solid {palette.input_border};
-                border-radius: 6px;
-                padding: 4px 36px 4px 10px;
-            }}
-            QComboBox:hover {{
-                border-color: {palette.accent};
-            }}
-            QComboBox:focus {{
-                border-color: {palette.accent};
-            }}
-            QComboBox::drop-down {{
-                subcontrol-origin: padding;
-                subcontrol-position: top right;
-                width: 28px;
-                border-left: 1px solid {palette.input_border};
-                background-color: {palette.secondary_background};
-                border-top-right-radius: 6px;
-                border-bottom-right-radius: 6px;
-            }}
-            QComboBox::down-arrow {{
-                image: url('{arrow_normal}');
-                width: 12px;
-                height: 8px;
-                margin-right: 8px;
-            }}
-            QComboBox::down-arrow:disabled {{
-                image: url('{arrow_disabled}');
-            }}
-            QListView {{
-                background-color: {palette.secondary_background};
-                color: {palette.text_primary};
-                border: 1px solid {palette.input_border};
-                selection-background-color: {palette.accent};
-                selection-color: {palette.inverse_text};
-            }}
-            """
+            dedent(
+                f"""
+                QComboBox {{
+                    background-color: {palette.input_background};
+                    color: {palette.text_primary};
+                    border: 1px solid {palette.input_border};
+                    border-radius: 10px;
+                    padding: 6px 36px 6px 14px;
+                    min-height: 34px;
+                }}
+                QComboBox:hover, QComboBox:focus {{
+                    border-color: {palette.accent};
+                }}
+                QComboBox:disabled {{
+                    color: {palette.text_secondary};
+                    background-color: {palette.secondary_background};
+                }}
+                QComboBox::drop-down {{
+                    subcontrol-origin: padding;
+                    subcontrol-position: center right;
+                    width: 32px;
+                    border: none;
+                    background: transparent;
+                    margin-right: 6px;
+                }}
+                QComboBox::down-arrow {{
+                    image: url('{arrow_normal}');
+                    width: 14px;
+                    height: 8px;
+                }}
+                QComboBox::down-arrow:disabled {{
+                    image: url('{arrow_disabled}');
+                }}
+                QComboBox QListView,
+                QComboBox QAbstractItemView {{
+                    background-color: {palette.secondary_background};
+                    color: {palette.text_primary};
+                    border: 1px solid {palette.input_border};
+                    border-radius: 8px;
+                    padding: 4px 0px;
+                    selection-background-color: {palette.accent};
+                    selection-color: {palette.inverse_text};
+                    outline: 0;
+                }}
+                QComboBox QListView::item,
+                QComboBox QAbstractItemView::item {{
+                    padding: 6px 12px;
+                    margin: 0px;
+                }}
+                QComboBox QListView::item:hover,
+                QComboBox QAbstractItemView::item:hover {{
+                    background-color: {palette.accent_hover};
+                    color: {palette.inverse_text};
+                }}
+                """
+            )
         )
 
     def _refresh_item_widgets_palette(self, palette: ThemeColors) -> None:
