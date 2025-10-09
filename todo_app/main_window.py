@@ -187,31 +187,18 @@ class ModernTodoAppWindow(QMainWindow):
         )
         return f"data:image/svg+xml,{quote(svg)}"
 
-    def _color_with_alpha(self, hex_color: str, alpha: float) -> str:
-        """将 HEX 颜色转换为带透明度的 rgba 表达式。"""
-
-        hex_value = hex_color.lstrip("#")
-        if len(hex_value) != 6:
-            return hex_color
-
-        red = int(hex_value[0:2], 16)
-        green = int(hex_value[2:4], 16)
-        blue = int(hex_value[4:6], 16)
-        return f"rgba({red}, {green}, {blue}, {alpha:.2f})"
-
     def _apply_combo_palette(self, combo: Optional[QComboBox], palette: ThemeColors) -> None:
         """为筛选和排序下拉框应用主题色样式。"""
 
         if combo is None:
             return
 
-        combo.setMinimumHeight(36)
+        combo.setMinimumHeight(28)
         combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         combo.setCursor(Qt.CursorShape.PointingHandCursor)
 
         arrow_normal = self._build_combo_arrow_uri(palette.text_primary)
         arrow_disabled = self._build_combo_arrow_uri(palette.text_secondary)
-        drop_hover_bg = self._color_with_alpha(palette.accent, 0.12)
 
         combo.setStyleSheet(
             dedent(
@@ -220,9 +207,9 @@ class ModernTodoAppWindow(QMainWindow):
                     background-color: {palette.input_background};
                     color: {palette.text_primary};
                     border: 1px solid {palette.input_border};
-                    border-radius: 12px;
-                    padding: 6px 44px 6px 16px;
-                    min-height: 36px;
+                    border-radius: 6px;
+                    padding: 4px 28px 4px 10px;
+                    min-height: 28px;
                 }}
                 QComboBox:focus {{
                     border-color: {palette.accent};
@@ -237,20 +224,20 @@ class ModernTodoAppWindow(QMainWindow):
                 QComboBox::drop-down {{
                     subcontrol-origin: content;
                     subcontrol-position: center right;
-                    width: 38px;
-                    border-top-right-radius: 12px;
-                    border-bottom-right-radius: 12px;
-                    background-color: {palette.secondary_background};
+                    width: 24px;
+                    border-top-right-radius: 6px;
+                    border-bottom-right-radius: 6px;
+                    background-color: {palette.input_background};
                     border-left: 1px solid {palette.input_border};
-                    margin-right: 0px;
+                    margin-right: 2px;
                 }}
                 QComboBox::drop-down:hover {{
-                    background-color: {drop_hover_bg};
+                    background-color: {palette.secondary_background};
                 }}
                 QComboBox::down-arrow {{
                     image: url('{arrow_normal}');
-                    width: 14px;
-                    height: 8px;
+                    width: 12px;
+                    height: 7px;
                 }}
                 QComboBox::down-arrow:disabled {{
                     image: url('{arrow_disabled}');
@@ -260,15 +247,15 @@ class ModernTodoAppWindow(QMainWindow):
                     background-color: {palette.secondary_background};
                     color: {palette.text_primary};
                     border: 1px solid {palette.input_border};
-                    border-radius: 10px;
-                    padding: 6px 0px;
+                    border-radius: 6px;
+                    padding: 4px 0px;
                     selection-background-color: {palette.accent};
                     selection-color: {palette.inverse_text};
                     outline: 0;
                 }}
                 QComboBox QListView::item,
                 QComboBox QAbstractItemView::item {{
-                    padding: 6px 14px;
+                    padding: 4px 12px;
                     margin: 0px;
                 }}
                 QComboBox QListView::item:hover,
