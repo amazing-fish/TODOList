@@ -4,6 +4,8 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
+from urllib.parse import quote
+from textwrap import dedent
 
 from PySide6.QtCore import QByteArray, QEvent, QSettings, QTimer, Qt, QSize, Slot
 from PySide6.QtMultimedia import QSoundEffect
@@ -92,7 +94,7 @@ class ModernTodoAppWindow(QMainWindow):
         self.filter_combo = QComboBox()
         self.filter_combo.addItems(["全部", "未完成", "已完成", "今天到期", "高优先级"])
         self.filter_combo.currentTextChanged.connect(self.update_list_widget)
-        controls_layout.addWidget(self.filter_combo, 1)
+        controls_layout.addWidget(self.filter_combo)
 
         self.sort_label = QLabel("排序:")
         controls_layout.addWidget(self.sort_label)
@@ -101,7 +103,9 @@ class ModernTodoAppWindow(QMainWindow):
             ["创建时间 (新->旧)", "创建时间 (旧->新)", "截止日期 (近->远)", "截止日期 (远->近)", "优先级 (高->低)"]
         )
         self.sort_combo.currentTextChanged.connect(self.update_list_widget)
-        controls_layout.addWidget(self.sort_combo, 2)
+        controls_layout.addWidget(self.sort_combo)
+
+        controls_layout.addStretch(1)
 
         self.add_button = QPushButton()
         self.add_button.setToolTip("添加新任务")
@@ -167,10 +171,117 @@ class ModernTodoAppWindow(QMainWindow):
         self.sort_label.setStyleSheet(
             f"color: {palette.text_primary}; font-size: 10pt; background-color: transparent;"
         )
+        self._apply_combo_palette(self.filter_combo, palette)
+        self._apply_combo_palette(self.sort_combo, palette)
         if self._empty_placeholder_label is not None:
             self._empty_placeholder_label.setStyleSheet(
                 f"color: {palette.text_secondary}; font-style: italic; font-size: 12pt; background-color: transparent;"
             )
+
+    def _build_combo_arrow_uri(self, stroke_color: str) -> str:
+        """根据主题颜色构建下拉箭头 SVG 的 data URI。"""
+
+        svg = (
+            "<svg width=\"12\" height=\"8\" viewBox=\"0 0 12 8\" xmlns=\"http://www.w3.org/2000/svg\">"
+            f"<path d=\"M1.5 2.25L6 6.75L10.5 2.25\" stroke=\"{stroke_color}\" stroke-width=\"1.5\" "
+            "stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+            "</svg>"
+        )
+        return f"data:image/svg+xml,{quote(svg)}"
+
+    def _apply_combo_palette(self, combo: Optional[QComboBox], palette: ThemeColors) -> None:
+        """为筛选和排序下拉框应用主题色样式。"""
+
+        if combo is None:
+            return
+
+        combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        combo.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        arrow_normal = self._build_combo_arrow_uri(palette.text_primary)
+        arrow_disabled = self._build_combo_arrow_uri(palette.text_secondary)
+
+        combo.setStyleSheet(
+            dedent(
+                f"""
+                QComboBox {{
+                    background-color: {palette.input_background};
+                    color: {palette.text_primary};
+                    border: 1px solid {palette.input_border};
+                    border-radius: 4px;
+                    padding: 1px 14px 1px 6px;
+                    min-height: 0px;
+                }}
+                QComboBox:focus {{
+                    border-color: {palette.accent};
+                }}
+                QComboBox:hover {{
+                    border-color: {palette.accent_hover};
+                }}
+                QComboBox:disabled {{
+                    color: {palette.text_secondary};
+                    background-color: {palette.secondary_background};
+                }}
+                QComboBox::drop-down {{
+                    subcontrol-origin: padding;
+                    subcontrol-position: center right;
+                    width: 14px;
+                    border: none;
+                    background-color: transparent;
+                }}
+                QComboBox::down-arrow {{
+                    image: url('{arrow_normal}');
+                    width: 9px;
+                    height: 5px;
+                }}
+                QComboBox::down-arrow:disabled {{
+                    image: url('{arrow_disabled}');
+                }}
+                QComboBox QListView,
+                QComboBox QAbstractItemView {{
+                    background-color: {palette.secondary_background};
+                    color: {palette.text_primary};
+                    border: 1px solid {palette.input_border};
+                    border-radius: 4px;
+                    padding: 2px 0px;
+                    selection-background-color: {palette.accent};
+                    selection-color: {palette.inverse_text};
+                    outline: 0;
+                }}
+                QComboBox QListView::item,
+                QComboBox QAbstractItemView::item {{
+                    padding: 2px 8px;
+                    margin: 0px;
+                }}
+                QComboBox QListView::item:hover,
+                QComboBox QAbstractItemView::item:hover {{
+                    background-color: {palette.accent_hover};
+                    color: {palette.inverse_text};
+                }}
+                """
+            )
+        )
+
+        self._update_combo_compact_width(combo)
+
+    def _update_combo_compact_width(self, combo: Optional[QComboBox]) -> None:
+        """根据内容长度压缩组合框宽度，避免在布局中被拉伸。"""
+
+        if combo is None:
+            return
+
+        metrics = combo.fontMetrics()
+        max_text_width = 0
+        for index in range(combo.count()):
+            text_width = metrics.horizontalAdvance(combo.itemText(index))
+            if text_width > max_text_width:
+                max_text_width = text_width
+
+        # 样式中左右内边距分别为 6px 与 14px，箭头宽度约 9px，额外保留 8px 防止文字贴边。
+        extra_spacing = 6 + 14 + 9 + 8
+        combo.setFixedWidth(max_text_width + extra_spacing)
+
 
     def _refresh_item_widgets_palette(self, palette: ThemeColors) -> None:
         """遍历所有待办卡片并刷新其配色。"""
