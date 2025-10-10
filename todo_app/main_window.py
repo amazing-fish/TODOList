@@ -193,7 +193,7 @@ class ModernTodoAppWindow(QMainWindow):
         if combo is None:
             return
 
-        combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        combo.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         combo.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -208,7 +208,8 @@ class ModernTodoAppWindow(QMainWindow):
                     color: {palette.text_primary};
                     border: 1px solid {palette.input_border};
                     border-radius: 4px;
-                    padding: 2px 18px 2px 8px;
+                    padding: 1px 14px 1px 6px;
+                    min-height: 0px;
                 }}
                 QComboBox:focus {{
                     border-color: {palette.accent};
@@ -223,14 +224,14 @@ class ModernTodoAppWindow(QMainWindow):
                 QComboBox::drop-down {{
                     subcontrol-origin: padding;
                     subcontrol-position: center right;
-                    width: 16px;
+                    width: 14px;
                     border: none;
                     background-color: transparent;
                 }}
                 QComboBox::down-arrow {{
                     image: url('{arrow_normal}');
-                    width: 10px;
-                    height: 6px;
+                    width: 9px;
+                    height: 5px;
                 }}
                 QComboBox::down-arrow:disabled {{
                     image: url('{arrow_disabled}');
@@ -241,14 +242,14 @@ class ModernTodoAppWindow(QMainWindow):
                     color: {palette.text_primary};
                     border: 1px solid {palette.input_border};
                     border-radius: 4px;
-                    padding: 3px 0px;
+                    padding: 2px 0px;
                     selection-background-color: {palette.accent};
                     selection-color: {palette.inverse_text};
                     outline: 0;
                 }}
                 QComboBox QListView::item,
                 QComboBox QAbstractItemView::item {{
-                    padding: 3px 10px;
+                    padding: 2px 8px;
                     margin: 0px;
                 }}
                 QComboBox QListView::item:hover,
