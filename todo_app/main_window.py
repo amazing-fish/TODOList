@@ -193,8 +193,8 @@ class ModernTodoAppWindow(QMainWindow):
         if combo is None:
             return
 
-        combo.setMinimumHeight(26)
-        combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         combo.setCursor(Qt.CursorShape.PointingHandCursor)
 
         arrow_normal = self._build_combo_arrow_uri(palette.text_primary)
@@ -208,8 +208,7 @@ class ModernTodoAppWindow(QMainWindow):
                     color: {palette.text_primary};
                     border: 1px solid {palette.input_border};
                     border-radius: 4px;
-                    padding: 2px 22px 2px 8px;
-                    min-height: 26px;
+                    padding: 2px 18px 2px 8px;
                 }}
                 QComboBox:focus {{
                     border-color: {palette.accent};
@@ -224,7 +223,7 @@ class ModernTodoAppWindow(QMainWindow):
                 QComboBox::drop-down {{
                     subcontrol-origin: padding;
                     subcontrol-position: center right;
-                    width: 18px;
+                    width: 16px;
                     border: none;
                     background-color: transparent;
                 }}
