@@ -189,6 +189,12 @@ class NotificationDialog(QDialog):
     def snooze_8pm(self) -> None:
         now = datetime.now().astimezone()
         target_dt = datetime.combine(now.date(), time(20, 0), tzinfo=now.tzinfo)
+        if target_dt <= now:
+            target_dt = datetime.combine(
+                now.date() + timedelta(days=1),
+                time(20, 0),
+                tzinfo=now.tzinfo,
+            )
         self._set_snooze_and_close(target_dt - now)
 
     def get_snooze_duration(self) -> Optional[timedelta]:
