@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from urllib.parse import quote
 from textwrap import dedent
@@ -36,6 +36,7 @@ from .constants import (
     REMINDER_SOUND_PATH,
 )
 from .dialogs import NotificationDialog, TaskEditDialog
+from .reminders import clear_expired_snooze, evaluate_notification_decision, normalize_reminder_settings
 from .storage import load_todos, save_todos
 from .utils import get_icon, play_sound_effect
 from .widgets import TodoItemWidget
@@ -65,6 +66,7 @@ class ModernTodoAppWindow(QMainWindow):
         self._empty_placeholder_item: Optional[QListWidgetItem] = None
         self._empty_placeholder_widget: Optional[QWidget] = None
         self._empty_placeholder_label: Optional[QLabel] = None
+        self._tray_hint_shown = False
 
         self._build_ui()
         self._create_tray_icon()
@@ -318,26 +320,8 @@ class ModernTodoAppWindow(QMainWindow):
             if not original_ref:
                 continue
 
-            snooze_updated = False
-            snooze_until = original_ref.get("snoozeUntil")
-            if snooze_until:
-                try:
-                    if datetime.fromisoformat(snooze_until.replace("Z", "+00:00")) <= now_utc:
-                        original_ref.update(
-                            {
-                                "snoozeUntil": None,
-                                "notifiedForReminder": False,
-                                "notifiedForDue": False,
-                            }
-                        )
-                        snooze_updated = True
-                        items_changed = True
-                except ValueError:
-                    original_ref["snoozeUntil"] = None
-                    snooze_updated = True
-                    items_changed = True
-
-            if snooze_updated:
+            if clear_expired_snooze(original_ref, now_utc):
+                items_changed = True
                 todo.update(
                     {
                         "snoozeUntil": original_ref["snoozeUntil"],
@@ -360,39 +344,21 @@ class ModernTodoAppWindow(QMainWindow):
                 self.active_notifications.pop(todo["id"]).close()
             return
 
-        due_date_str = todo.get("dueDate")
-        if not due_date_str:
+        decision = evaluate_notification_decision(todo, current_time_utc)
+        if decision.error:
+            print(decision.error)
+            return
+        if decision.due_datetime is None:
             return
 
-        try:
-            due_date_dt = datetime.fromisoformat(due_date_str.replace("Z", "+00:00"))
-        except ValueError:
-            print(f"错误: 任务ID {todo.get('id', '未知')} 截止日期格式无效: {due_date_str}")
-            return
-
-        snooze_until = todo.get("snoozeUntil")
-        if snooze_until:
-            try:
-                if datetime.fromisoformat(snooze_until.replace("Z", "+00:00")) > current_time_utc:
-                    return
-            except ValueError:
-                pass
-
-        reminder_offset_sec = todo.get("reminderOffset", 0)
         notification_triggered = False
-        if reminder_offset_sec >= 0:
-            reminder_time_dt = due_date_dt - timedelta(seconds=reminder_offset_sec)
-            if (
-                reminder_time_dt <= current_time_utc
-                and due_date_dt > current_time_utc
-                and not todo.get("notifiedForReminder", False)
-            ):
-                self._show_notification_dialog(todo, is_due_notification=False)
-                todo["notifiedForReminder"] = True
-                todo["lastNotifiedAt"] = current_time_utc.isoformat()
-                notification_triggered = True
+        if decision.should_fire_reminder:
+            self._show_notification_dialog(todo, is_due_notification=False)
+            todo["notifiedForReminder"] = True
+            todo["lastNotifiedAt"] = current_time_utc.isoformat()
+            notification_triggered = True
 
-        if due_date_dt <= current_time_utc and not todo.get("notifiedForDue", False):
+        if decision.should_fire_due:
             self._show_notification_dialog(todo, is_due_notification=True)
             todo["notifiedForDue"] = True
             if not todo.get("notifiedForReminder"):
@@ -484,6 +450,7 @@ class ModernTodoAppWindow(QMainWindow):
                     "notifiedForDue": False,
                     "lastNotifiedAt": None,
                 }
+                normalize_reminder_settings(new_todo)
                 self.todos.append(new_todo)
                 save_todos(self.todos)
                 self.update_list_widget()
@@ -516,17 +483,19 @@ class ModernTodoAppWindow(QMainWindow):
             updated_data = dialog.get_task_data()
             for index, todo in enumerate(self.todos):
                 if todo["id"] == normalized_id:
+                    updated_payload = {
+                        "text": updated_data["text"],
+                        "priority": updated_data["priority"],
+                        "dueDate": updated_data["dueDate"],
+                        "reminderOffset": updated_data["reminderOffset"],
+                        "snoozeUntil": None,
+                        "notifiedForReminder": False,
+                        "notifiedForDue": False,
+                        "lastNotifiedAt": None,
+                    }
+                    normalize_reminder_settings(updated_payload)
                     self.todos[index].update(
-                        {
-                            "text": updated_data["text"],
-                            "priority": updated_data["priority"],
-                            "dueDate": updated_data["dueDate"],
-                            "reminderOffset": updated_data["reminderOffset"],
-                            "snoozeUntil": None,
-                            "notifiedForReminder": False,
-                            "notifiedForDue": False,
-                            "lastNotifiedAt": None,
-                        }
+                        updated_payload
                     )
                     if normalized_id in self.active_notifications:
                         self.active_notifications.pop(normalized_id).close()
@@ -768,6 +737,31 @@ class ModernTodoAppWindow(QMainWindow):
             self.raise_()
             self.activateWindow()
 
+    def changeEvent(self, event: QEvent) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange and self.isMinimized():
+            QTimer.singleShot(0, self._hide_to_tray_on_minimize)
+
+    def _hide_to_tray_on_minimize(self) -> None:
+        if not self.isMinimized() or self._quitting_app:
+            return
+        if self.tray_icon and self.tray_icon.isVisible():
+            self.hide()
+            self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
+            self._show_tray_hint("窗口已最小化到托盘。")
+
+    def _show_tray_hint(self, message: str, *, force: bool = False) -> None:
+        if not (self.tray_icon and self.tray_icon.isVisible()):
+            return
+        if force or not self._tray_hint_shown:
+            self.tray_icon.showMessage(
+                APP_NAME,
+                message,
+                QSystemTrayIcon.MessageIcon.Information,
+                2000,
+            )
+            self._tray_hint_shown = True
+
     # --- 状态保存 ---
     def save_geometry_and_state(self) -> None:
         self.settings.setValue("geometry", self.saveGeometry())
@@ -851,12 +845,7 @@ class ModernTodoAppWindow(QMainWindow):
         if self.tray_icon and self.tray_icon.isVisible() and not self._quitting_app:
             self.hide()
             event.ignore()
-            self.tray_icon.showMessage(
-                APP_NAME,
-                "应用已最小化到系统托盘。",
-                QSystemTrayIcon.MessageIcon.Information,
-                2000,
-            )
+            self._show_tray_hint("应用已最小化到系统托盘。", force=True)
         else:
             if not self._quitting_app:
                 self.quit_application(from_close_event=True)

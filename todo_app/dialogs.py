@@ -209,6 +209,8 @@ class TaskEditDialog(QDialog):
         self.todo_item = todo_item
         self._internal_due_date = None
         self.time_edit: Optional[QDateTimeEdit] = None
+        self._last_enabled_reminder_text = "到期时"
+        self._preserve_reminder_on_toggle = False
         self._theme_manager = get_theme_manager()
         self._palette: ThemeColors = self._theme_manager.current_palette
         self._theme_manager.theme_changed.connect(self._on_theme_changed)
@@ -251,7 +253,9 @@ class TaskEditDialog(QDialog):
         reminder_layout.addWidget(QLabel("提前提醒:"))
         self.reminder_combo = QComboBox()
         self.reminder_combo.addItems(list(REMINDER_OPTIONS_MAP.keys()))
-        self.reminder_combo.setCurrentText("到期时")
+        self.reminder_combo.setCurrentText("不提醒")
+        self.reminder_combo.setEnabled(False)
+        self.reminder_combo.setToolTip("请先设置截止时间以启用提醒。")
         reminder_layout.addWidget(self.reminder_combo)
         reminder_layout.addStretch()
         options_layout.addLayout(reminder_layout)
@@ -368,6 +372,11 @@ class TaskEditDialog(QDialog):
         self.task_input.setPlainText(self.todo_item["text"])
         self.priority_combo.setCurrentText(self.todo_item.get("priority", "中"))
 
+        reminder_text = REMINDER_SECONDS_TO_TEXT_MAP.get(self.todo_item.get("reminderOffset", -1), "不提醒")
+        if reminder_text != "不提醒":
+            self._last_enabled_reminder_text = reminder_text
+        self.reminder_combo.setCurrentText(reminder_text)
+
         if self.todo_item.get("dueDate"):
             try:
                 due_dt_utc = datetime.fromisoformat(self.todo_item["dueDate"].replace("Z", "+00:00"))
@@ -385,17 +394,16 @@ class TaskEditDialog(QDialog):
 
                 self._internal_due_date = local_qdt.date()
                 self.time_edit.setDateTime(local_qdt)
+                self._preserve_reminder_on_toggle = True
                 self.set_due_date_button.setChecked(True)
+                self._preserve_reminder_on_toggle = False
                 self.update_selected_date_label()
             except ValueError:
                 print(f"错误: 编辑任务时截止日期格式无效: {self.todo_item['dueDate']}")
                 self.set_due_date_button.setChecked(False)
         else:
             self.set_due_date_button.setChecked(False)
-
-        self.reminder_combo.setCurrentText(
-            REMINDER_SECONDS_TO_TEXT_MAP.get(self.todo_item.get("reminderOffset", 0), "到期时")
-        )
+        self._update_reminder_combo_state(self.set_due_date_button.isChecked(), preserve_selection=True)
 
     def toggle_due_date_controls(self, checked: bool) -> None:
         from PySide6.QtCore import QDate
@@ -408,6 +416,21 @@ class TaskEditDialog(QDialog):
             self.update_selected_date_label()
         else:
             self._internal_due_date = None
+        self._update_reminder_combo_state(checked, preserve_selection=self._preserve_reminder_on_toggle)
+
+    def _update_reminder_combo_state(self, due_enabled: bool, *, preserve_selection: bool) -> None:
+        if due_enabled:
+            if not preserve_selection and self.reminder_combo.currentText() == "不提醒":
+                self.reminder_combo.setCurrentText(self._last_enabled_reminder_text)
+            self.reminder_combo.setEnabled(True)
+            self.reminder_combo.setToolTip("")
+        else:
+            current_text = self.reminder_combo.currentText()
+            if not preserve_selection and current_text != "不提醒":
+                self._last_enabled_reminder_text = current_text
+            self.reminder_combo.setCurrentText("不提醒")
+            self.reminder_combo.setEnabled(False)
+            self.reminder_combo.setToolTip("请先设置截止时间以启用提醒。")
 
     def update_selected_date_label(self) -> None:
         from PySide6.QtCore import QDate
@@ -472,11 +495,16 @@ class TaskEditDialog(QDialog):
                 py_due_date_utc = py_due_date_utc.replace(tzinfo=timezone.utc)
             due_date_iso_utc = py_due_date_utc.isoformat()
 
+        reminder_text = self.reminder_combo.currentText()
+        reminder_value = REMINDER_OPTIONS_MAP.get(reminder_text, -1)
+        if due_date_iso_utc is None:
+            reminder_value = -1
+
         return {
             "text": self.task_input.toPlainText().strip(),
             "priority": self.priority_combo.currentText(),
             "dueDate": due_date_iso_utc,
-            "reminderOffset": REMINDER_OPTIONS_MAP.get(self.reminder_combo.currentText(), 0),
+            "reminderOffset": reminder_value,
         }
 
     def accept(self) -> None:  # type: ignore[override]

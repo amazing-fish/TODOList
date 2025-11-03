@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .constants import REMINDER_SECONDS_TO_TEXT_MAP
+from .reminders import normalize_reminder_settings
 from .paths import DATA_FILE
 
 
@@ -43,11 +44,12 @@ def _migrate_and_validate_todo_item(todo_dict: dict[str, Any], current_index: in
     item.setdefault("completed", False)
     item.setdefault("priority", "中")
     item.setdefault("dueDate", None)
-    item.setdefault("reminderOffset", 0)
+    item.setdefault("reminderOffset", -1)
     item.setdefault("snoozeUntil", None)
     item.setdefault("lastNotifiedAt", None)
     item.setdefault("notifiedForReminder", False)
     item.setdefault("notifiedForDue", False)
+    normalize_reminder_settings(item)
     return item
 
 
