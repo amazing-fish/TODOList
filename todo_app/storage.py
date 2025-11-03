@@ -43,7 +43,20 @@ def _migrate_and_validate_todo_item(todo_dict: dict[str, Any], current_index: in
     item.setdefault("completed", False)
     item.setdefault("priority", "中")
     item.setdefault("dueDate", None)
-    item.setdefault("reminderOffset", 0)
+
+    reminder_offset = item.get("reminderOffset", -1)
+    try:
+        reminder_offset = int(reminder_offset)
+    except (TypeError, ValueError):
+        reminder_offset = -1
+
+    if reminder_offset not in REMINDER_SECONDS_TO_TEXT_MAP:
+        reminder_offset = 0 if item.get("dueDate") else -1
+
+    if not item.get("dueDate") and reminder_offset >= 0:
+        reminder_offset = -1
+
+    item["reminderOffset"] = reminder_offset
     item.setdefault("snoozeUntil", None)
     item.setdefault("lastNotifiedAt", None)
     item.setdefault("notifiedForReminder", False)

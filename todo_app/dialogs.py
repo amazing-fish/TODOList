@@ -209,6 +209,7 @@ class TaskEditDialog(QDialog):
         self.todo_item = todo_item
         self._internal_due_date = None
         self.time_edit: Optional[QDateTimeEdit] = None
+        self._reminder_selection_when_due_enabled = "到期时"
         self._theme_manager = get_theme_manager()
         self._palette: ThemeColors = self._theme_manager.current_palette
         self._theme_manager.theme_changed.connect(self._on_theme_changed)
@@ -252,6 +253,7 @@ class TaskEditDialog(QDialog):
         self.reminder_combo = QComboBox()
         self.reminder_combo.addItems(list(REMINDER_OPTIONS_MAP.keys()))
         self.reminder_combo.setCurrentText("到期时")
+        self.reminder_combo.setEnabled(False)
         reminder_layout.addWidget(self.reminder_combo)
         reminder_layout.addStretch()
         options_layout.addLayout(reminder_layout)
@@ -393,9 +395,13 @@ class TaskEditDialog(QDialog):
         else:
             self.set_due_date_button.setChecked(False)
 
-        self.reminder_combo.setCurrentText(
-            REMINDER_SECONDS_TO_TEXT_MAP.get(self.todo_item.get("reminderOffset", 0), "到期时")
+        reminder_text = REMINDER_SECONDS_TO_TEXT_MAP.get(
+            self.todo_item.get("reminderOffset", 0),
+            "到期时",
         )
+        self.reminder_combo.setCurrentText(reminder_text)
+        if reminder_text != "不提醒":
+            self._reminder_selection_when_due_enabled = reminder_text
 
     def toggle_due_date_controls(self, checked: bool) -> None:
         from PySide6.QtCore import QDate
@@ -408,6 +414,21 @@ class TaskEditDialog(QDialog):
             self.update_selected_date_label()
         else:
             self._internal_due_date = None
+        self._sync_reminder_state_with_due_date(checked)
+
+    def _sync_reminder_state_with_due_date(self, due_enabled: bool) -> None:
+        if due_enabled:
+            self.reminder_combo.setEnabled(True)
+            if (
+                self.reminder_combo.currentText() == "不提醒"
+                and self._reminder_selection_when_due_enabled
+            ):
+                self.reminder_combo.setCurrentText(self._reminder_selection_when_due_enabled)
+        else:
+            if self.reminder_combo.isEnabled():
+                self._reminder_selection_when_due_enabled = self.reminder_combo.currentText()
+            self.reminder_combo.setCurrentText("不提醒")
+            self.reminder_combo.setEnabled(False)
 
     def update_selected_date_label(self) -> None:
         from PySide6.QtCore import QDate
@@ -472,11 +493,15 @@ class TaskEditDialog(QDialog):
                 py_due_date_utc = py_due_date_utc.replace(tzinfo=timezone.utc)
             due_date_iso_utc = py_due_date_utc.isoformat()
 
+        reminder_offset = REMINDER_OPTIONS_MAP.get(self.reminder_combo.currentText(), -1)
+        if not due_date_iso_utc:
+            reminder_offset = -1
+
         return {
             "text": self.task_input.toPlainText().strip(),
             "priority": self.priority_combo.currentText(),
             "dueDate": due_date_iso_utc,
-            "reminderOffset": REMINDER_OPTIONS_MAP.get(self.reminder_combo.currentText(), 0),
+            "reminderOffset": reminder_offset,
         }
 
     def accept(self) -> None:  # type: ignore[override]
