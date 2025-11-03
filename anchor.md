@@ -19,6 +19,7 @@
 - `todo_app/main_window.py`：主窗口、过滤排序逻辑、系统托盘、提醒计时器、状态保存。
 - `todo_app/dialogs.py`：任务编辑对话框与提醒弹窗，负责校验输入、配置提醒与打盹选项。
 - `todo_app/widgets.py`：待办卡片视图与交互按钮，响应主题变化、完成状态切换、计时显示。
+- `todo_app/views/options.py`：集中声明列表筛选、排序选项，供主窗口加载控件及业务逻辑。
 - `todo_app/storage.py`：JSON 数据的读写与迁移，保证旧数据补全字段。
 - `todo_app/theme.py`：主题检测与切换，提供 `ThemeManager` 单例。
 - `todo_app/utils.py`：图标加载、声音播放、文本截断等通用工具。
@@ -39,7 +40,7 @@
 ## 交互与视觉关键点
 - 主题：通过 `ThemeManager` 监听系统配色；新增控件需调用 `apply_palette` 或监听 `theme_changed`。
 - 列表交互：
-  - 过滤/排序选项在主窗口初始化时定义，新增选项需更新 `update_list_widget` 的分支与文案。
+  - 过滤/排序选项集中在 `todo_app/views/options.py`，主窗口通过配置驱动控件，新增选项需同步更新此模块与锚点。
   - 列表项使用 `TodoItemWidget`，按钮图标依赖 `assets/icons`，缺失时 `utils.get_icon` 会自动降级并打印警告。
 - 提醒流程：`master_timer` 每秒触发 `tick_update` 检查到期任务，提醒音通过 `play_sound_effect` 播放，可根据资源情况提供回退字符或系统提示音。
 - 托盘行为：系统托盘菜单与最小化逻辑集中在 `main_window.py::_create_tray_icon`，调整时注意多平台兼容。

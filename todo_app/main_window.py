@@ -39,6 +39,12 @@ from .dialogs import NotificationDialog, TaskEditDialog
 from .storage import load_todos, save_todos
 from .utils import get_icon, play_sound_effect
 from .widgets import TodoItemWidget
+from .views import (
+    FILTER_OPTION_MAP,
+    FILTER_OPTIONS,
+    SORT_OPTION_MAP,
+    SORT_OPTIONS,
+)
 from .theme import ThemeColors, get_theme_manager
 
 
@@ -92,16 +98,14 @@ class ModernTodoAppWindow(QMainWindow):
         self.filter_label = QLabel("筛选:")
         controls_layout.addWidget(self.filter_label)
         self.filter_combo = QComboBox()
-        self.filter_combo.addItems(["全部", "未完成", "已完成", "今天到期", "高优先级"])
+        self.filter_combo.addItems([option.label for option in FILTER_OPTIONS])
         self.filter_combo.currentTextChanged.connect(self.update_list_widget)
         controls_layout.addWidget(self.filter_combo)
 
         self.sort_label = QLabel("排序:")
         controls_layout.addWidget(self.sort_label)
         self.sort_combo = QComboBox()
-        self.sort_combo.addItems(
-            ["创建时间 (新->旧)", "创建时间 (旧->新)", "截止日期 (近->远)", "截止日期 (远->近)", "优先级 (高->低)"]
-        )
+        self.sort_combo.addItems([option.label for option in SORT_OPTIONS])
         self.sort_combo.currentTextChanged.connect(self.update_list_widget)
         controls_layout.addWidget(self.sort_combo)
 
@@ -350,8 +354,7 @@ class ModernTodoAppWindow(QMainWindow):
             self._check_for_notification(original_ref, now_utc)
 
         if items_changed:
-            save_todos(self.todos)
-            self.update_list_widget()
+            self._persist_and_refresh()
 
     # --- 通知逻辑 ---
     def _check_for_notification(self, todo: dict, current_time_utc: datetime) -> None:
@@ -445,8 +448,7 @@ class ModernTodoAppWindow(QMainWindow):
                 item_changed = True
 
         if item_changed:
-            save_todos(self.todos)
-            self.update_list_widget()
+            self._persist_and_refresh()
 
     # --- 任务操作 ---
     def show_add_task_dialog(self) -> None:
@@ -485,8 +487,7 @@ class ModernTodoAppWindow(QMainWindow):
                     "lastNotifiedAt": None,
                 }
                 self.todos.append(new_todo)
-                save_todos(self.todos)
-                self.update_list_widget()
+                self._persist_and_refresh()
         finally:
             if self._add_task_dialog is dialog:
                 self._add_task_dialog = None
@@ -498,6 +499,12 @@ class ModernTodoAppWindow(QMainWindow):
         except (TypeError, ValueError):
             print(f"警告: 收到无法识别的任务ID: {raw_id!r}")
             return None
+
+    def _persist_and_refresh(self) -> None:
+        """将当前任务列表写回磁盘并刷新界面。"""
+
+        save_todos(self.todos)
+        self.update_list_widget()
 
     @Slot(object)
     def handle_edit_request(self, todo_id: object) -> None:
@@ -532,8 +539,7 @@ class ModernTodoAppWindow(QMainWindow):
                         self.active_notifications.pop(normalized_id).close()
                     break
 
-            save_todos(self.todos)
-            self.update_list_widget()
+            self._persist_and_refresh()
 
     @Slot(object)
     def handle_delete_request(self, todo_id: object) -> None:
@@ -563,8 +569,7 @@ class ModernTodoAppWindow(QMainWindow):
             original_len = len(self.todos)
             self.todos = [t for t in self.todos if t.get("id") != normalized_id]
             if len(self.todos) < original_len:
-                save_todos(self.todos)
-                self.update_list_widget()
+                self._persist_and_refresh()
             else:
                 print(f"警告: 删除任务时未找到ID {normalized_id}。")
 
@@ -605,8 +610,7 @@ class ModernTodoAppWindow(QMainWindow):
                 break
 
         if changed:
-            save_todos(self.todos)
-            self.update_list_widget()
+            self._persist_and_refresh()
         else:
             print(f"警告: 切换ID {normalized_id} 任务完成状态时未找到。")
 
@@ -665,76 +669,25 @@ class ModernTodoAppWindow(QMainWindow):
 
     def _filter_todos(self, todos_list: List[dict]) -> List[dict]:
         filter_text = self.filter_combo.currentText()
-        if filter_text == "全部":
+        option = FILTER_OPTION_MAP.get(filter_text)
+        if option is None:
+            return todos_list
+        try:
+            return [todo for todo in todos_list if option.predicate(todo)]
+        except Exception as exc:  # noqa: BLE001
+            print(f"警告: 筛选选项 {filter_text!r} 执行时出错: {exc}")
             return todos_list
 
-        today_local = datetime.now().astimezone().date()
-        filtered: List[dict] = []
-        for todo in todos_list:
-            add = False
-            if filter_text == "未完成":
-                add = not todo.get("completed", False)
-            elif filter_text == "已完成":
-                add = todo.get("completed", False)
-            elif filter_text == "今天到期" and not todo.get("completed", False) and todo.get("dueDate"):
-                try:
-                    if datetime.fromisoformat(todo["dueDate"].replace("Z", "+00:00")).astimezone().date() == today_local:
-                        add = True
-                except ValueError:
-                    pass
-            elif filter_text == "高优先级" and not todo.get("completed", False) and todo.get("priority") == "高":
-                add = True
-            if add:
-                filtered.append(todo)
-        return filtered
-
     def _sort_todos(self, todos_list: List[dict]) -> List[dict]:
-        sort_key = self.sort_combo.currentText()
-
-        def get_due(todo: dict, future_extreme: bool = True) -> datetime:
-            due_str = todo.get("dueDate")
-            if due_str:
-                try:
-                    return datetime.fromisoformat(due_str.replace("Z", "+00:00"))
-                except ValueError:
-                    pass
-            extreme_date = datetime.max if future_extreme else datetime.min
-            return extreme_date.replace(tzinfo=timezone.utc)
-
-        priority_value = lambda p: {"高": 0, "中": 1, "低": 2}.get(p, 3)
-
-        if sort_key == "创建时间 (新->旧)":
-            return sorted(
-                todos_list,
-                key=lambda t: datetime.fromisoformat(t["createdAt"].replace("Z", "+00:00")),
-                reverse=True,
-            )
-        if sort_key == "创建时间 (旧->新)":
-            return sorted(
-                todos_list,
-                key=lambda t: datetime.fromisoformat(t["createdAt"].replace("Z", "+00:00")),
-            )
-        if sort_key == "截止日期 (近->远)":
-            return sorted(
-                todos_list,
-                key=lambda t: (t.get("completed", False), get_due(t, True)),
-            )
-        if sort_key == "截止日期 (远->近)":
-            return sorted(
-                todos_list,
-                key=lambda t: (t.get("completed", False), get_due(t, True)),
-                reverse=True,
-            )
-        if sort_key == "优先级 (高->低)":
-            return sorted(
-                todos_list,
-                key=lambda t: (
-                    t.get("completed", False),
-                    priority_value(t.get("priority", "中")),
-                    get_due(t, True),
-                ),
-            )
-        return todos_list
+        sort_text = self.sort_combo.currentText()
+        option = SORT_OPTION_MAP.get(sort_text)
+        if option is None:
+            return todos_list
+        try:
+            return sorted(todos_list, key=option.key, reverse=option.reverse)
+        except Exception as exc:  # noqa: BLE001
+            print(f"警告: 排序选项 {sort_text!r} 执行失败: {exc}")
+            return todos_list
 
     # --- 托盘 ---
     def _create_tray_icon(self) -> None:
