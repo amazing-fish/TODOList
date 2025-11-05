@@ -82,6 +82,7 @@ def load_todos() -> list[dict[str, Any]]:
 
 def save_todos(todos_list: list[dict[str, Any]]) -> None:
     try:
+        DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
         with DATA_FILE.open("w", encoding="utf-8") as fp:
             json.dump(todos_list, fp, ensure_ascii=False, indent=4)
     except Exception as exc:  # noqa: BLE001
