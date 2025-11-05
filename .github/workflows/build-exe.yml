@@ -29,13 +29,13 @@ jobs:
 
       - name: 构建可执行文件
         run: |
-          pyinstaller main.py ^
-            --name TODOList ^
-            --noconsole ^
-            --clean ^
-            --onefile ^
-            --add-data "assets;assets" ^
-            --hidden-import PySide6.QtSvg ^
+          pyinstaller main.py `
+            --name TODOList `
+            --noconsole `
+            --clean `
+            --onefile `
+            --add-data "assets;assets" `
+            --hidden-import PySide6.QtSvg `
             --hidden-import PySide6.QtMultimedia
 
       - name: 上传构建产物
