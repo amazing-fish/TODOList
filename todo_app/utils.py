@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from datetime import datetime
 from functools import lru_cache
+from pathlib import Path
 from typing import Iterable
 
 from PySide6.QtCore import QUrl, QSize, Qt
@@ -12,6 +13,7 @@ from PySide6.QtMultimedia import QSoundEffect
 from PySide6.QtWidgets import QApplication
 
 from .constants import DEFAULT_ICON_SIZE
+from .paths import resource_path
 from .theme import get_current_palette
 
 _warned_icon_paths: set[str] = set()
@@ -24,11 +26,15 @@ def _get_font_metrics(font: QFont) -> QFontMetrics:
     return QFontMetrics(font)
 
 
-def get_icon(icon_path: str, fallback_char: str = "●", size: QSize | None = None) -> QIcon:
+def get_icon(icon_path: os.PathLike[str] | str, fallback_char: str = "●", size: QSize | None = None) -> QIcon:
     """加载图标，若缺失则生成回退图标。"""
     icon_size = size or DEFAULT_ICON_SIZE
-    if icon_path and os.path.exists(icon_path):
-        return QIcon(icon_path)
+    resolved_path: Path | None = None
+    if icon_path:
+        resolved_path = resource_path(icon_path)
+
+    if resolved_path and resolved_path.exists():
+        return QIcon(str(resolved_path))
 
     pixmap = QPixmap(icon_size)
     pixmap.fill(Qt.GlobalColor.transparent)
@@ -40,22 +46,30 @@ def get_icon(icon_path: str, fallback_char: str = "●", size: QSize | None = No
     painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, fallback_char)
     painter.end()
 
-    if icon_path and icon_path not in _warned_icon_paths:
+    if icon_path and str(icon_path) not in _warned_icon_paths:
         print(f"警告: 图标 '{icon_path}' 未找到，使用后备字符图标 '{fallback_char}'。")
-        _warned_icon_paths.add(icon_path)
+        _warned_icon_paths.add(str(icon_path))
     return QIcon(pixmap)
 
 
-def play_sound_effect(sound_effect_player: QSoundEffect, sound_path: str, fallback_beep: bool = True) -> None:
+def play_sound_effect(
+    sound_effect_player: QSoundEffect,
+    sound_path: os.PathLike[str] | str,
+    fallback_beep: bool = True,
+) -> None:
     """播放声音资源，不存在时使用系统提示音。"""
-    if sound_path and os.path.exists(sound_path):
-        sound_effect_player.setSource(QUrl.fromLocalFile(sound_path))
+    resolved_path: Path | None = None
+    if sound_path:
+        resolved_path = resource_path(sound_path)
+
+    if resolved_path and resolved_path.exists():
+        sound_effect_player.setSource(QUrl.fromLocalFile(str(resolved_path)))
         sound_effect_player.play()
         return
 
-    if sound_path and sound_path not in _warned_sound_paths:
+    if sound_path and str(sound_path) not in _warned_sound_paths:
         print(f"警告: 声音文件 '{sound_path}' 未找到。将尝试使用系统提示音。")
-        _warned_sound_paths.add(sound_path)
+        _warned_sound_paths.add(str(sound_path))
 
     if not fallback_beep:
         return

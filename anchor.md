@@ -11,7 +11,8 @@
 ## 项目速览
 - **定位**：基于 PySide6 的桌面待办事项管理工具，强调现代化视觉、提醒/延迟机制与轻量本地存储。
 - **入口**：`main.py` 调用 `todo_app.run()`，由 `ModernTodoAppWindow`（`todo_app/main_window.py`）驱动 UI 与业务流。
-- **运行**：开发环境可执行 `python main.py`；打包/发布暂未定义，需要额外脚本时请在此补充。
+- **运行**：开发环境可执行 `python main.py`；GitHub Actions 工作流 `build-exe.yml` 负责生成 Windows 平台单文件可执行程序，并在推送 `v*` 标签
+  时上传到 Release。
 - **依赖要点**：PySide6 GUI 组件、`QSoundEffect` 播放提醒、`todos.json` 做本地数据缓存。
 
 ## 代码结构速查
@@ -26,7 +27,8 @@
 - `todo_app/paths.py`：基础路径与 `todos.json` 存放位置。
 
 ## 数据约束
-- 所有待办保存在项目根目录下的 `todos.json`，结构为列表，元素为字典。
+- 所有待办保存在项目根目录下的 `todos.json`，结构为列表，元素为字典；打包版运行时会改存至用户数据目录（Windows `%APPDATA%\TODOList`，
+  其他平台 `~/.todolist/`）。
 - 字段约定：
   - `id`（int）唯一标识；缺失或非法时由 `_migrate_and_validate_todo_item` 重新生成。
   - `text`（str）任务内容，UI 侧以富文本/纯文本显示，需兼容多行但在列表中会截断显示。
