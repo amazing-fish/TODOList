@@ -52,14 +52,7 @@
 - 仓库提供的 GitHub Actions 工作流 `.github/workflows/build-exe.yml` 会在手动触发或推送 `v*` 标签时使用 PyInstaller 打包 Windows 平台的单文件可执行程序，构建结果会作为工作流附件保存；当以标签触发时还会自动更新 GitHub Release。
 - 若需本地验证，可执行：
   ```bash
-  pyinstaller main.py \
-    --name TODOList \
-    --noconsole \
-    --clean \
-    --onefile \
-    --add-data "assets{}assets" \
-    --hidden-import PySide6.QtSvg \
-    --hidden-import PySide6.QtMultimedia
+  pyinstaller main.py --name TODOList --noconsole --clean -onefile --add-data "assets;assets" --hidden-import PySide6.QtSvg --hidden-import PySide6.QtMultimedia
   ```
-  请将 `"assets{}assets"` 中的分隔符替换为当前系统要求（Windows 使用 `;`，macOS/Linux 使用 `:`）。
+  请将 `"assets;assets"` 中的分隔符替换为当前系统要求（Windows 使用 `;`，macOS/Linux 使用 `:`）。
 - 打包版本会将 `todos.json` 存放在用户数据目录（Windows 为 `%APPDATA%\TODOList`，其他平台为 `~/.todolist/`），以避免写入只读的程序目录。
