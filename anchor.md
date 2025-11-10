@@ -43,8 +43,8 @@
 - 列表交互：
   - 过滤/排序选项在主窗口初始化时定义，新增选项需更新 `update_list_widget` 的分支与文案。
   - 列表项使用 `TodoItemWidget`，按钮图标依赖 `assets/icons`，缺失时 `utils.get_icon` 会自动降级并打印警告。
-- 提醒流程：`master_timer` 每秒触发 `tick_update` 检查到期任务，提醒音通过 `play_sound_effect` 播放，可根据资源情况提供回退字符或系统提示音。
-- 托盘行为：系统托盘菜单与最小化逻辑集中在 `main_window.py::_create_tray_icon`，调整时注意多平台兼容。
+- 提醒流程：`master_timer` 每秒触发 `tick_update` 检查到期任务，提醒音通过 `play_sound_effect` 播放，可根据资源情况提供回退字符或系统提示音；提醒唤醒时优先调用原生接口恢复并前置主窗口，若平台不支持则临时添加 `WindowStaysOnTopHint` 保障可见，之后自动回退。
+- 托盘行为：系统托盘菜单与最小化逻辑集中在 `main_window.py::_create_tray_icon`，调整时注意多平台兼容；点击窗口最小化按钮会直接隐藏到托盘，提醒触发时会自动还原窗口并置顶。
 
 ## 资源约束
 - 所有 SVG/音频资源路径在 `constants.py` 中声明，新增资源需：①放入 `assets` 子目录；②在常量中登记；③如为图标，保证 SVG 可在浅/深色主题下辨识。
