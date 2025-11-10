@@ -76,6 +76,9 @@ class ModernTodoAppWindow(QMainWindow):
         self.restore_geometry_and_state()
 
         self._last_minimize_to_tray_notified = False
+        self._on_top_restore_timer = QTimer(self)
+        self._on_top_restore_timer.setSingleShot(True)
+        self._on_top_restore_timer.timeout.connect(self._restore_window_stays_on_top_flag)
 
     # --- UI 初始化 ---
     def _build_ui(self) -> None:
@@ -464,6 +467,16 @@ class ModernTodoAppWindow(QMainWindow):
         if self.isHidden() or not self.isVisible():
             self.show()
 
+        self._force_window_foreground()
+        QTimer.singleShot(160, self._reinforce_focus_after_notification)
+        self._last_minimize_to_tray_notified = False
+
+    def _reinforce_focus_after_notification(self) -> None:
+        if self._quitting_app:
+            return
+        self._force_window_foreground()
+
+    def _force_window_foreground(self) -> None:
         self.raise_()
         self.activateWindow()
 
@@ -475,17 +488,48 @@ class ModernTodoAppWindow(QMainWindow):
         if window_handle is not None:
             window_handle.requestActivate()
 
-        QTimer.singleShot(120, self._reinforce_focus_after_notification)
-        self._last_minimize_to_tray_notified = False
+        native_succeeded = False
+        if sys.platform.startswith("win"):
+            native_succeeded = self._force_foreground_windows()
 
-    def _reinforce_focus_after_notification(self) -> None:
-        if self._quitting_app:
+        if not native_succeeded:
+            self._temporarily_force_window_on_top()
+
+    def _force_foreground_windows(self) -> bool:
+        try:
+            import ctypes
+
+            hwnd = int(self.winId())
+            if not hwnd:
+                return False
+
+            user32 = ctypes.windll.user32
+            SW_RESTORE = 9
+            user32.ShowWindow(hwnd, SW_RESTORE)
+            user32.AllowSetForegroundWindow(-1)
+            result = bool(user32.SetForegroundWindow(hwnd))
+            if result:
+                user32.BringWindowToTop(hwnd)
+            return result
+        except Exception as exc:  # pragma: no cover - 平台相关分支
+            print(f"警告: Windows 前置窗口失败: {exc}")
+            return False
+
+    def _temporarily_force_window_on_top(self) -> None:
+        if self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint:
+            self._on_top_restore_timer.start(1000)
             return
-        self.raise_()
-        self.activateWindow()
-        window_handle = self.windowHandle()
-        if window_handle is not None:
-            window_handle.requestActivate()
+
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        self.show()
+        self._on_top_restore_timer.start(1000)
+
+    def _restore_window_stays_on_top_flag(self) -> None:
+        if not self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint:
+            return
+
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
+        self.show()
 
     # --- 任务操作 ---
     def show_add_task_dialog(self) -> None:
