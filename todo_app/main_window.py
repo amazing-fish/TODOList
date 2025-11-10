@@ -75,6 +75,8 @@ class ModernTodoAppWindow(QMainWindow):
         self.master_timer.start(1000)
         self.restore_geometry_and_state()
 
+        self._last_minimize_to_tray_notified = False
+
     # --- UI 初始化 ---
     def _build_ui(self) -> None:
         self.setWindowTitle(f"{APP_NAME} - v{APP_VERSION}")
@@ -415,6 +417,7 @@ class ModernTodoAppWindow(QMainWindow):
         else:
             play_sound_effect(self.reminder_sound, REMINDER_SOUND_PATH)
 
+        self._ensure_window_visible_for_notification()
         dialog = NotificationDialog(todo_item, self)
         self.active_notifications[todo_item["id"]] = dialog
         dialog.raise_()
@@ -447,6 +450,17 @@ class ModernTodoAppWindow(QMainWindow):
         if item_changed:
             save_todos(self.todos)
             self.update_list_widget()
+
+    def _ensure_window_visible_for_notification(self) -> None:
+        if self._quitting_app:
+            return
+        if self.isMinimized():
+            self.showNormal()
+        if not self.isVisible():
+            self.show()
+        self.raise_()
+        self.activateWindow()
+        self._last_minimize_to_tray_notified = False
 
     # --- 任务操作 ---
     def show_add_task_dialog(self) -> None:
@@ -754,7 +768,38 @@ class ModernTodoAppWindow(QMainWindow):
             self.showNormal()
         self.raise_()
         self.activateWindow()
+        self._last_minimize_to_tray_notified = False
         self.show_add_task_dialog()
+
+    def changeEvent(self, event: QEvent) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() != QEvent.Type.WindowStateChange or self._quitting_app:
+            return
+
+        old_state = event.oldState() if hasattr(event, "oldState") else Qt.WindowState.WindowNoState
+        tray_icon = getattr(self, "tray_icon", None)
+        if (
+            self.isMinimized()
+            and not self.isHidden()
+            and tray_icon
+            and tray_icon.isVisible()
+            and not (old_state & Qt.WindowState.WindowMinimized)
+        ):
+            QTimer.singleShot(0, self._minimize_to_tray)
+
+    def _minimize_to_tray(self) -> None:
+        if self._quitting_app:
+            return
+        self.hide()
+        tray_icon = getattr(self, "tray_icon", None)
+        if not self._last_minimize_to_tray_notified and tray_icon and tray_icon.isVisible():
+            tray_icon.showMessage(
+                APP_NAME,
+                "应用已最小化到系统托盘。",
+                QSystemTrayIcon.MessageIcon.Information,
+                2000,
+            )
+            self._last_minimize_to_tray_notified = True
 
     def _on_tray_icon_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
@@ -767,6 +812,8 @@ class ModernTodoAppWindow(QMainWindow):
             self.showNormal()
             self.raise_()
             self.activateWindow()
+        if self.isVisible():
+            self._last_minimize_to_tray_notified = False
 
     # --- 状态保存 ---
     def save_geometry_and_state(self) -> None:
@@ -848,15 +895,17 @@ class ModernTodoAppWindow(QMainWindow):
 
         self.save_geometry_and_state()
 
-        if self.tray_icon and self.tray_icon.isVisible() and not self._quitting_app:
+        tray_icon = getattr(self, "tray_icon", None)
+        if tray_icon and tray_icon.isVisible() and not self._quitting_app:
             self.hide()
             event.ignore()
-            self.tray_icon.showMessage(
+            tray_icon.showMessage(
                 APP_NAME,
                 "应用已最小化到系统托盘。",
                 QSystemTrayIcon.MessageIcon.Information,
                 2000,
             )
+            self._last_minimize_to_tray_notified = True
         else:
             if not self._quitting_app:
                 self.quit_application(from_close_event=True)
