@@ -454,13 +454,38 @@ class ModernTodoAppWindow(QMainWindow):
     def _ensure_window_visible_for_notification(self) -> None:
         if self._quitting_app:
             return
-        if self.isMinimized():
+        current_state = self.windowState()
+        if current_state & Qt.WindowState.WindowMinimized:
+            self.setWindowState(current_state & ~Qt.WindowState.WindowMinimized)
             self.showNormal()
-        if not self.isVisible():
+        elif self.isMinimized():
+            self.showNormal()
+
+        if self.isHidden() or not self.isVisible():
             self.show()
+
         self.raise_()
         self.activateWindow()
+
+        app = QApplication.instance()
+        if app is not None:
+            app.setActiveWindow(self)
+
+        window_handle = self.windowHandle()
+        if window_handle is not None:
+            window_handle.requestActivate()
+
+        QTimer.singleShot(120, self._reinforce_focus_after_notification)
         self._last_minimize_to_tray_notified = False
+
+    def _reinforce_focus_after_notification(self) -> None:
+        if self._quitting_app:
+            return
+        self.raise_()
+        self.activateWindow()
+        window_handle = self.windowHandle()
+        if window_handle is not None:
+            window_handle.requestActivate()
 
     # --- 任务操作 ---
     def show_add_task_dialog(self) -> None:
