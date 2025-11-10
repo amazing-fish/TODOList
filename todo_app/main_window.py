@@ -768,6 +768,30 @@ class ModernTodoAppWindow(QMainWindow):
             self.raise_()
             self.activateWindow()
 
+    def changeEvent(self, event: QEvent) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if (
+            event.type() == QEvent.Type.WindowStateChange
+            and self.isMinimized()
+            and getattr(self, "tray_icon", None)
+            and self.tray_icon.isVisible()
+            and not self._quitting_app
+        ):
+            QTimer.singleShot(0, self._minimize_to_tray)
+
+    def _minimize_to_tray(self) -> None:
+        self.hide()
+        self._show_tray_minimize_message()
+
+    def _show_tray_minimize_message(self) -> None:
+        if self.tray_icon and self.tray_icon.isVisible():
+            self.tray_icon.showMessage(
+                APP_NAME,
+                "应用已最小化到系统托盘。",
+                QSystemTrayIcon.MessageIcon.Information,
+                2000,
+            )
+
     # --- 状态保存 ---
     def save_geometry_and_state(self) -> None:
         self.settings.setValue("geometry", self.saveGeometry())
@@ -851,12 +875,7 @@ class ModernTodoAppWindow(QMainWindow):
         if self.tray_icon and self.tray_icon.isVisible() and not self._quitting_app:
             self.hide()
             event.ignore()
-            self.tray_icon.showMessage(
-                APP_NAME,
-                "应用已最小化到系统托盘。",
-                QSystemTrayIcon.MessageIcon.Information,
-                2000,
-            )
+            self._show_tray_minimize_message()
         else:
             if not self._quitting_app:
                 self.quit_application(from_close_event=True)
