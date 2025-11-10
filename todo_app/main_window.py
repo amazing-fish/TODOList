@@ -84,7 +84,7 @@ class ModernTodoAppWindow(QMainWindow):
     def _build_ui(self) -> None:
         self.setWindowTitle(f"{APP_NAME} - v{APP_VERSION}")
         self.setWindowIcon(get_icon(APP_ICON_PATH, "T"))
-        self.setMinimumSize(420, 560)
+        self.setMinimumSize(320, 560)
         main_widget = QWidget(self)
         self.setCentralWidget(main_widget)
         main_layout = QVBoxLayout(main_widget)
@@ -894,13 +894,17 @@ class ModernTodoAppWindow(QMainWindow):
         geom_bytes = self.settings.value("geometry")
         state_bytes = self.settings.value("windowState")
         screen = QApplication.primaryScreen()
+        target_width, target_height = 320, 640
         if screen:
             available = screen.availableGeometry()
-            default_width = min(max(int(available.width() * 0.35), 480), int(available.width() * 0.5))
-            default_height = min(max(int(available.height() * 0.55), 680), int(available.height() * 0.75))
+            default_width = min(target_width, available.width())
+            default_height = min(target_height, available.height())
         else:
-            default_width, default_height = 480, 680
-        default_size = QSize(default_width, default_height)
+            default_width, default_height = target_width, target_height
+        default_size = QSize(
+            max(default_width, self.minimumWidth()),
+            max(default_height, self.minimumHeight()),
+        )
         restored_geom = False
         if isinstance(geom_bytes, QByteArray) and not geom_bytes.isEmpty():
             restored_geom = bool(self.restoreGeometry(geom_bytes))
@@ -929,8 +933,8 @@ class ModernTodoAppWindow(QMainWindow):
         screen_geom = screen.availableGeometry()
         window_geom = self.frameGeometry()
         if not screen_geom.intersects(window_geom) or window_geom.width() < self.minimumWidth() or window_geom.height() < self.minimumHeight():
-            dw = min(max(self.minimumSizeHint().width(), 420), int(screen_geom.width() * 0.85))
-            dh = min(max(self.minimumSizeHint().height(), 600), int(screen_geom.height() * 0.85))
+            dw = min(max(self.minimumSizeHint().width(), 320), int(screen_geom.width() * 0.85))
+            dh = min(max(self.minimumSizeHint().height(), 640), int(screen_geom.height() * 0.85))
             self.resize(QSize(dw, dh))
             self._center_window()
             if self.isMinimized() or not self.isVisible():
