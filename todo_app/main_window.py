@@ -67,6 +67,7 @@ class ModernTodoAppWindow(QMainWindow):
         self._empty_placeholder_label: Optional[QLabel] = None
 
         self._build_ui()
+        self._tray_minimize_hint_shown = False
         self._create_tray_icon()
         self.update_list_widget()
 
@@ -415,6 +416,7 @@ class ModernTodoAppWindow(QMainWindow):
         else:
             play_sound_effect(self.reminder_sound, REMINDER_SOUND_PATH)
 
+        self._restore_from_tray()
         dialog = NotificationDialog(todo_item, self)
         self.active_notifications[todo_item["id"]] = dialog
         dialog.raise_()
@@ -750,10 +752,7 @@ class ModernTodoAppWindow(QMainWindow):
         self.tray_icon.show()
 
     def quick_add_from_tray(self) -> None:
-        if self.isHidden() or self.isMinimized():
-            self.showNormal()
-        self.raise_()
-        self.activateWindow()
+        self._restore_from_tray()
         self.show_add_task_dialog()
 
     def _on_tray_icon_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
@@ -764,9 +763,31 @@ class ModernTodoAppWindow(QMainWindow):
         if self.isVisible() and not self.isMinimized():
             self.hide()
         else:
+            self._restore_from_tray()
+
+    def _restore_from_tray(self) -> None:
+        if self.isHidden() or self.isMinimized():
             self.showNormal()
-            self.raise_()
-            self.activateWindow()
+        self.raise_()
+        self.activateWindow()
+        if self._tray_minimize_hint_shown:
+            self._tray_minimize_hint_shown = False
+
+    def _minimize_to_tray(self) -> None:
+        if getattr(self, "_quitting_app", False):
+            return
+        tray_icon = getattr(self, "tray_icon", None)
+        if not tray_icon or not tray_icon.isVisible():
+            return
+        self.hide()
+        if not self._tray_minimize_hint_shown:
+            tray_icon.showMessage(
+                APP_NAME,
+                "应用已最小化到系统托盘。",
+                QSystemTrayIcon.MessageIcon.Information,
+                2000,
+            )
+            self._tray_minimize_hint_shown = True
 
     # --- 状态保存 ---
     def save_geometry_and_state(self) -> None:
@@ -838,6 +859,11 @@ class ModernTodoAppWindow(QMainWindow):
     def showEvent(self, event: QEvent) -> None:  # noqa: N802
         super().showEvent(event)
         QTimer.singleShot(0, self._update_empty_placeholder_geometry)
+
+    def changeEvent(self, event: QEvent) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange and self.isMinimized():
+            QTimer.singleShot(0, self._minimize_to_tray)
 
     # --- 关闭流程 ---
     def closeEvent(self, event: QEvent) -> None:  # noqa: N802
