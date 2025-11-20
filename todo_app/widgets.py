@@ -92,7 +92,6 @@ class TodoItemWidget(QFrame):
         self.edit_button.setIconSize(QSize(18, 18))
         self.edit_button.setToolTip("编辑任务")
         self.edit_button.clicked.connect(self._edit_item)
-        self.edit_button.setEnabled(not self.todo_item.get("completed", False))
 
         self.delete_button = QPushButton(icon=get_icon(DELETE_ICON_PATH, "🗑"))
         self.delete_button.setIconSize(QSize(18, 18))
@@ -126,7 +125,6 @@ class TodoItemWidget(QFrame):
         self.priority_label.setText(self._priority_badge_html(self.todo_item.get("priority", "中")))
         self.priority_label.setTextFormat(Qt.TextFormat.RichText)
 
-        self.edit_button.setEnabled(not is_completed)
         self.timer_display_label.setStyleSheet(
             f"font-size: 9pt; color: {palette.text_secondary}; {text_decoration}"
         )
@@ -213,8 +211,6 @@ class TodoItemWidget(QFrame):
         icon_path = DONE_ICON_PATH if is_completed else INCOMPLETE_ICON_PATH
         fallback_char = "✓" if is_completed else "○"
         self.complete_button.setIcon(get_icon(icon_path, fallback_char))
-        self.edit_button.setEnabled(not is_completed)
-        self.edit_button.setToolTip("编辑任务" if not is_completed else "已完成任务不可编辑")
         self._update_frame_background()
 
         text_color = self._palette.text_completed if is_completed else self._palette.text_primary

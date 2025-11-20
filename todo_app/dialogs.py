@@ -229,6 +229,12 @@ class TaskEditDialog(QDialog):
         layout.setSpacing(15)
         layout.setContentsMargins(20, 20, 20, 20)
 
+        self.info_label = QLabel()
+        self.info_label.setObjectName("editInfoLabel")
+        self.info_label.setWordWrap(True)
+        self.info_label.setVisible(False)
+        layout.addWidget(self.info_label)
+
         layout.addWidget(QLabel("任务内容:"))
         self.task_input = QTextEdit()
         self.task_input.setPlaceholderText("输入待办事项内容 (可多行)...")
@@ -316,6 +322,14 @@ class TaskEditDialog(QDialog):
             f"""
             QDialog {{ background-color: {palette.background}; }}
             QLabel {{ font-size: 10pt; color: {palette.text_primary}; }}
+            QLabel#editInfoLabel {{
+                font-size: 9pt;
+                color: {palette.due_warning};
+                background-color: {palette.secondary_background};
+                border-left: 3px solid {palette.due_warning};
+                border-radius: 4px;
+                padding: 6px 10px;
+            }}
             QTextEdit, QComboBox, QDateTimeEdit {{
                 padding: 9px; border: 1px solid {palette.input_border}; border-radius: 4px;
                 font-size: 10pt; background-color: {palette.input_background};
@@ -367,6 +381,13 @@ class TaskEditDialog(QDialog):
 
         self.task_input.setPlainText(self.todo_item["text"])
         self.priority_combo.setCurrentText(self.todo_item.get("priority", "中"))
+
+        is_completed = self.todo_item.get("completed", False)
+        if is_completed:
+            self.info_label.setText("提示：该任务已完成，修改内容会立即同步，请确认后保存。")
+            self.info_label.setVisible(True)
+        else:
+            self.info_label.setVisible(False)
 
         if self.todo_item.get("dueDate"):
             try:
