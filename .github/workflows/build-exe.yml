@@ -22,10 +22,16 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: 配置 pip 缓存目录
+        run: |
+          $cacheDir = Join-Path $env:RUNNER_TEMP "pip-cache"
+          New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+          "PIP_CACHE_DIR=$cacheDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: 缓存 pip
         uses: actions/cache@v4
         with:
-          path: ~/.cache/pip
+          path: ${{ env.PIP_CACHE_DIR }}
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
