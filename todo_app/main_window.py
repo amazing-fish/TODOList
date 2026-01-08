@@ -119,11 +119,14 @@ class ModernTodoAppWindow(QMainWindow):
         self.add_button.setIconSize(QSize(18, 18))
         self.add_button.setAccessibleName("添加任务")
         self.add_button.clicked.connect(self.show_add_task_dialog)
-        controls_layout.addWidget(self.add_button)
         main_layout.addLayout(controls_layout)
 
+        list_header_layout = QHBoxLayout()
         self.list_label = QLabel("待办列表")
-        main_layout.addWidget(self.list_label)
+        list_header_layout.addWidget(self.list_label)
+        list_header_layout.addStretch(1)
+        list_header_layout.addWidget(self.add_button)
+        main_layout.addLayout(list_header_layout)
 
         self.list_widget = QListWidget()
         self.list_widget.setStyleSheet(
