@@ -99,6 +99,9 @@ class ModernTodoAppWindow(QMainWindow):
         self.filter_combo = QComboBox()
         self.filter_combo.addItems(["全部", "未完成", "已完成", "今天到期", "高优先级"])
         self.filter_combo.currentTextChanged.connect(self.update_list_widget)
+        self.filter_combo.currentTextChanged.connect(
+            lambda _: self._update_combo_compact_width(self.filter_combo)
+        )
         controls_layout.addWidget(self.filter_combo)
 
         self.sort_label = QLabel("排序:")
@@ -108,6 +111,9 @@ class ModernTodoAppWindow(QMainWindow):
             ["创建时间 (新->旧)", "创建时间 (旧->新)", "截止日期 (近->远)", "截止日期 (远->近)", "优先级 (高->低)"]
         )
         self.sort_combo.currentTextChanged.connect(self.update_list_widget)
+        self.sort_combo.currentTextChanged.connect(
+            lambda _: self._update_combo_compact_width(self.sort_combo)
+        )
         controls_layout.addWidget(self.sort_combo)
 
         controls_layout.addStretch(1)
@@ -274,21 +280,18 @@ class ModernTodoAppWindow(QMainWindow):
         self._update_combo_compact_width(combo)
 
     def _update_combo_compact_width(self, combo: Optional[QComboBox]) -> None:
-        """根据内容长度压缩组合框宽度，避免在布局中被拉伸。"""
+        """根据当前文本长度压缩组合框宽度，避免框体比文字更宽。"""
 
         if combo is None:
             return
 
         metrics = combo.fontMetrics()
-        max_text_width = 0
-        for index in range(combo.count()):
-            text_width = metrics.horizontalAdvance(combo.itemText(index))
-            if text_width > max_text_width:
-                max_text_width = text_width
+        text = combo.currentText()
+        text_width = metrics.horizontalAdvance(text)
 
-        # 样式中左右内边距分别为 6px 与 14px，箭头宽度约 9px，额外保留 8px 防止文字贴边。
-        extra_spacing = 6 + 14 + 9 + 8
-        combo.setFixedWidth(max_text_width + extra_spacing)
+        # 样式中左右内边距分别为 6px 与 14px，箭头宽度约 9px，额外保留 4px 防止文字贴边。
+        extra_spacing = 6 + 14 + 9 + 4
+        combo.setFixedWidth(text_width + extra_spacing)
 
 
     def _refresh_item_widgets_palette(self, palette: ThemeColors) -> None:
