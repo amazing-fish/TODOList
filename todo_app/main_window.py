@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSizePolicy,
+    QStyle,
+    QStyleOptionComboBox,
     QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
@@ -274,21 +276,23 @@ class ModernTodoAppWindow(QMainWindow):
         self._update_combo_compact_width(combo)
 
     def _update_combo_compact_width(self, combo: Optional[QComboBox]) -> None:
-        """根据内容长度压缩组合框宽度，避免在布局中被拉伸。"""
+        """根据内容与样式计算组合框宽度，避免文本被截断或出现空白区。"""
 
         if combo is None:
             return
 
-        metrics = combo.fontMetrics()
-        max_text_width = 0
-        for index in range(combo.count()):
-            text_width = metrics.horizontalAdvance(combo.itemText(index))
-            if text_width > max_text_width:
-                max_text_width = text_width
+        if combo.count() == 0:
+            return
 
-        # 样式中左右内边距分别为 6px 与 14px，箭头宽度约 9px，额外保留 8px 防止文字贴边。
-        extra_spacing = 6 + 14 + 9 + 8
-        combo.setFixedWidth(max_text_width + extra_spacing)
+        metrics = combo.fontMetrics()
+        max_text = max(combo.itemText(index) for index in range(combo.count()))
+        text_width = metrics.horizontalAdvance(max_text)
+        option = QStyleOptionComboBox()
+        option.initFrom(combo)
+        option.currentText = max_text
+        option.fontMetrics = metrics
+        size = combo.style().sizeFromContents(QStyle.CT_ComboBox, option, QSize(text_width, 0), combo)
+        combo.setFixedWidth(size.width() + 2)
 
 
     def _refresh_item_widgets_palette(self, palette: ThemeColors) -> None:
