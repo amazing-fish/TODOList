@@ -285,7 +285,10 @@ class ModernTodoAppWindow(QMainWindow):
             return
 
         metrics = combo.fontMetrics()
-        max_text = max(combo.itemText(index) for index in range(combo.count()))
+        max_text = max(
+            (combo.itemText(index) for index in range(combo.count())),
+            key=metrics.horizontalAdvance,
+        )
         text_width = metrics.horizontalAdvance(max_text)
         option = QStyleOptionComboBox()
         option.initFrom(combo)
