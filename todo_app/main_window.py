@@ -451,13 +451,21 @@ class ModernTodoAppWindow(QMainWindow):
             snooze_duration = dialog.get_snooze_duration()
             if snooze_duration:
                 snooze_until_dt = datetime.now(timezone.utc) + snooze_duration
-                current_ref.update(
-                    {
-                        "snoozeUntil": snooze_until_dt.isoformat(),
-                        "notifiedForReminder": False,
-                        "notifiedForDue": False,
-                    }
-                )
+                updated_fields = {
+                    "snoozeUntil": snooze_until_dt.isoformat(),
+                    "notifiedForReminder": False,
+                    "notifiedForDue": False,
+                }
+
+                due_date_str = current_ref.get("dueDate")
+                if due_date_str:
+                    try:
+                        due_date_dt = datetime.fromisoformat(due_date_str.replace("Z", "+00:00"))
+                        updated_fields["dueDate"] = (due_date_dt + snooze_duration).isoformat()
+                    except ValueError:
+                        updated_fields["dueDate"] = snooze_until_dt.isoformat()
+
+                current_ref.update(updated_fields)
                 item_changed = True
 
         if item_changed:
@@ -478,13 +486,7 @@ class ModernTodoAppWindow(QMainWindow):
             self.show()
 
         self._force_window_foreground()
-        QTimer.singleShot(160, self._reinforce_focus_after_notification)
         self._last_minimize_to_tray_notified = False
-
-    def _reinforce_focus_after_notification(self) -> None:
-        if self._quitting_app:
-            return
-        self._force_window_foreground()
 
     def _force_window_foreground(self) -> None:
         self.raise_()
