@@ -382,8 +382,7 @@ class TaskEditDialog(QDialog):
         self.task_input.setPlainText(self.todo_item["text"])
         self.priority_combo.setCurrentText(self.todo_item.get("priority", "中"))
 
-        is_completed = self.todo_item.get("completed", False)
-        if is_completed:
+        if self.todo_item.get("completed", False):
             self.info_label.setText("提示：该任务已完成，修改内容会立即同步，请确认后保存。")
             self.info_label.setVisible(True)
         else:

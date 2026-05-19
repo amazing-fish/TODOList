@@ -38,6 +38,7 @@ from .constants import (
     REMINDER_SOUND_PATH,
 )
 from .dialogs import NotificationDialog, TaskEditDialog
+from .scheduling import build_edit_update_fields, build_snooze_update_fields
 from .storage import load_todos, save_todos
 from .utils import get_icon, play_sound_effect
 from .widgets import TodoItemWidget
@@ -450,22 +451,7 @@ class ModernTodoAppWindow(QMainWindow):
         elif result == QDialog.DialogCode.Accepted + 1:
             snooze_duration = dialog.get_snooze_duration()
             if snooze_duration:
-                snooze_until_dt = datetime.now(timezone.utc) + snooze_duration
-                updated_fields = {
-                    "snoozeUntil": snooze_until_dt.isoformat(),
-                    "notifiedForReminder": False,
-                    "notifiedForDue": False,
-                }
-
-                due_date_str = current_ref.get("dueDate")
-                if due_date_str:
-                    try:
-                        due_date_dt = datetime.fromisoformat(due_date_str.replace("Z", "+00:00"))
-                        updated_fields["dueDate"] = (due_date_dt + snooze_duration).isoformat()
-                    except ValueError:
-                        updated_fields["dueDate"] = snooze_until_dt.isoformat()
-
-                current_ref.update(updated_fields)
+                current_ref.update(build_snooze_update_fields(current_ref, snooze_duration))
                 item_changed = True
 
         if item_changed:
@@ -611,18 +597,7 @@ class ModernTodoAppWindow(QMainWindow):
             updated_data = dialog.get_task_data()
             for index, todo in enumerate(self.todos):
                 if todo["id"] == normalized_id:
-                    self.todos[index].update(
-                        {
-                            "text": updated_data["text"],
-                            "priority": updated_data["priority"],
-                            "dueDate": updated_data["dueDate"],
-                            "reminderOffset": updated_data["reminderOffset"],
-                            "snoozeUntil": None,
-                            "notifiedForReminder": False,
-                            "notifiedForDue": False,
-                            "lastNotifiedAt": None,
-                        }
-                    )
+                    self.todos[index].update(build_edit_update_fields(todo, updated_data))
                     if normalized_id in self.active_notifications:
                         self.active_notifications.pop(normalized_id).close()
                     break
