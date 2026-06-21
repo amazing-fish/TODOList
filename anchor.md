@@ -6,7 +6,7 @@
 ## 项目速览
 - **定位**：基于 PySide6 的桌面待办事项管理工具，强调现代化视觉、提醒/延迟机制与轻量本地存储。
 - **入口**：`main.py` 调用 `todo_app.run()`，由 `ModernTodoAppWindow`（`todo_app/main_window.py`）驱动 UI 与业务流。
-- **运行**：开发环境可执行 `python main.py`；GitHub Actions 工作流 `build-exe.yml` 负责生成 Windows 平台单文件可执行程序，并在推送 `v*` 标签时上传到 Release。
+- **运行**：开发环境可执行 `python main.py`；GitHub Actions 工作流 `build-exe.yml` 负责生成 Windows 平台单文件可执行程序，在推送到 `main` 分支时上传构建产物，并在推送 `v*` 标签时上传到 Release。
 - **依赖要点**：PySide6 GUI 组件、`QSoundEffect` 播放提醒、`todos.json` 做本地数据缓存。
 
 ## 技术路径
@@ -68,6 +68,7 @@
 - 若确认无变更，提交说明需写明“锚点已复盘，无需更新”。
 
 ## 最近约定变更
+- 2026-06-21：refactor，Windows 打包工作流增加 main 分支 push 触发，合并后自动生成构建产物，标签触发 Release 的规则不变（不触发版本号）。
 - 2026-05-10：bugfix，抽离提醒调度规则，修复到期后推迟再编辑仍回显旧时间的问题，并让编辑保存按调度字段变化自动清理提醒状态，版本更新至 `v1.7.7`。
 - 2026-02-09：bugfix，优化提醒弹窗前置焦点流程避免列表抢焦点，并将“推迟”同步写回任务截止时间，版本更新至 `v1.7.6`。
 - 2026-01-11：bugfix，修正筛选/排序下拉框最长文本宽度计算逻辑，版本更新至 `v1.7.5`。

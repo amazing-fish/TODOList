@@ -3,6 +3,8 @@ name: Windows 可执行文件打包
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
 
