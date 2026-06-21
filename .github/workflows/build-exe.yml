@@ -3,6 +3,8 @@ name: Windows 可执行文件打包
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
 
@@ -16,6 +18,22 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
+
+      - name: 解析发布版本
+        id: release_version
+        shell: pwsh
+        run: |
+          if ("${{ github.ref }}" -like "refs/tags/*") {
+            $tag = "${{ github.ref_name }}"
+          } else {
+            $content = Get-Content -LiteralPath "todo_app/constants.py" -Raw
+            if ($content -notmatch 'APP_VERSION\s*=\s*"(?<version>\d+\.\d+\.\d+)"') {
+              throw "无法从 todo_app/constants.py 解析 APP_VERSION"
+            }
+            $tag = "v$($Matches.version)"
+          }
+          "release_tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: 设置 Python
         uses: actions/setup-python@v5
@@ -59,8 +77,20 @@ jobs:
           path: dist/TODOList.exe
           if-no-files-found: error
 
+      - name: 同步发布标签
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f $env:RELEASE_TAG $env:GITHUB_SHA
+          git push origin "refs/tags/$env:RELEASE_TAG" --force
+
       - name: 创建或更新发布
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.release_version.outputs.release_tag }}
+          target_commitish: ${{ github.sha }}
           files: dist/TODOList.exe
+          overwrite_files: true
