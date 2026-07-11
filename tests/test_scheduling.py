@@ -80,6 +80,32 @@ class SchedulingRulesTest(unittest.TestCase):
         self.assertNotIn("snoozeUntil", updated)
         self.assertNotIn("lastNotifiedAt", updated)
 
+    def test_text_only_edit_preserves_snooze_after_qt_datetime_round_trip(self) -> None:
+        existing = {
+            "text": "延后后的任务",
+            "priority": "中",
+            "dueDate": "2026-07-12T03:28:39.634786+08:00",
+            "reminderOffset": 0,
+            "snoozeUntil": "2026-07-12T03:28:39.634786+08:00",
+            "notifiedForReminder": True,
+            "notifiedForDue": True,
+            "lastNotifiedAt": "2026-07-12T03:13:00.763984+08:00",
+        }
+        edited = {
+            "text": "完成一部分后的任务",
+            "priority": "中",
+            "dueDate": "2026-07-11T19:28:39.634000+00:00",
+            "reminderOffset": 0,
+        }
+
+        updated = build_edit_update_fields(existing, edited)
+
+        self.assertEqual(updated["dueDate"], existing["dueDate"])
+        self.assertNotIn("snoozeUntil", updated)
+        self.assertNotIn("notifiedForReminder", updated)
+        self.assertNotIn("notifiedForDue", updated)
+        self.assertNotIn("lastNotifiedAt", updated)
+
     def test_schedule_edit_resets_snooze_and_notification_state(self) -> None:
         existing = {
             "text": "任务",
@@ -100,6 +126,32 @@ class SchedulingRulesTest(unittest.TestCase):
 
         updated = build_edit_update_fields(existing, edited)
 
+        self.assertIsNone(updated["snoozeUntil"])
+        self.assertFalse(updated["notifiedForReminder"])
+        self.assertFalse(updated["notifiedForDue"])
+        self.assertIsNone(updated["lastNotifiedAt"])
+
+    def test_reminder_offset_edit_resets_state_with_equivalent_due_date(self) -> None:
+        existing = {
+            "text": "任务",
+            "priority": "中",
+            "dueDate": "2026-07-12T03:28:39.634786+08:00",
+            "reminderOffset": 0,
+            "snoozeUntil": "2026-07-12T03:28:39.634786+08:00",
+            "notifiedForReminder": True,
+            "notifiedForDue": True,
+            "lastNotifiedAt": "2026-07-12T03:13:00.763984+08:00",
+        }
+        edited = {
+            "text": "任务",
+            "priority": "中",
+            "dueDate": "2026-07-11T19:28:39.634000+00:00",
+            "reminderOffset": 900,
+        }
+
+        updated = build_edit_update_fields(existing, edited)
+
+        self.assertEqual(updated["dueDate"], existing["dueDate"])
         self.assertIsNone(updated["snoozeUntil"])
         self.assertFalse(updated["notifiedForReminder"])
         self.assertFalse(updated["notifiedForDue"])

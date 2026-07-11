@@ -377,7 +377,7 @@ class TaskEditDialog(QDialog):
         if not self.todo_item:
             return
 
-        from PySide6.QtCore import QDateTime, Qt, QDate
+        from PySide6.QtCore import QDateTime, QTimeZone
 
         self.task_input.setPlainText(self.todo_item["text"])
         self.priority_combo.setCurrentText(self.todo_item.get("priority", "中"))
@@ -390,16 +390,16 @@ class TaskEditDialog(QDialog):
 
         if self.todo_item.get("dueDate"):
             try:
-                due_dt_utc = datetime.fromisoformat(self.todo_item["dueDate"].replace("Z", "+00:00"))
-                qdt_utc = QDateTime(
-                    due_dt_utc.year,
-                    due_dt_utc.month,
-                    due_dt_utc.day,
-                    due_dt_utc.hour,
-                    due_dt_utc.minute,
-                    due_dt_utc.second,
-                    due_dt_utc.microsecond // 1000,
-                    Qt.TimeSpec.UTC,
+                parsed_due_date = datetime.fromisoformat(
+                    self.todo_item["dueDate"].replace("Z", "+00:00")
+                )
+                if parsed_due_date.tzinfo is None:
+                    due_dt_utc = parsed_due_date.replace(tzinfo=timezone.utc)
+                else:
+                    due_dt_utc = parsed_due_date.astimezone(timezone.utc)
+                qdt_utc = QDateTime.fromMSecsSinceEpoch(
+                    int(due_dt_utc.timestamp() * 1000),
+                    QTimeZone.utc(),
                 )
                 local_qdt = qdt_utc.toLocalTime()
 
