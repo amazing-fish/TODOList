@@ -485,6 +485,10 @@ class ModernTodoAppWindow(QMainWindow):
         self._notification_dialog.raise_()
         self._notification_dialog.activateWindow()
 
+    def _hide_notification_dialog(self) -> None:
+        if self._notification_dialog is not None:
+            self._notification_dialog.hide()
+
     def _close_notification_dialog(self) -> None:
         if self._notification_dialog is None:
             return
@@ -878,6 +882,7 @@ class ModernTodoAppWindow(QMainWindow):
     def _minimize_to_tray(self) -> None:
         if self._quitting_app:
             return
+        self._hide_notification_dialog()
         self.hide()
         tray_icon = getattr(self, "tray_icon", None)
         if not self._last_minimize_to_tray_notified and tray_icon and tray_icon.isVisible():
@@ -895,6 +900,7 @@ class ModernTodoAppWindow(QMainWindow):
 
     def toggle_window_visibility(self) -> None:
         if self.isVisible() and not self.isMinimized():
+            self._hide_notification_dialog()
             self.hide()
         else:
             self.showNormal()
@@ -985,6 +991,7 @@ class ModernTodoAppWindow(QMainWindow):
 
         tray_icon = getattr(self, "tray_icon", None)
         if tray_icon and tray_icon.isVisible() and not self._quitting_app:
+            self._hide_notification_dialog()
             self.hide()
             event.ignore()
             tray_icon.showMessage(

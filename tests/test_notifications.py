@@ -111,8 +111,10 @@ class FakeNotificationDialog:
     def __init__(self, requests, parent=None) -> None:
         self.requests = []
         self.show_count = 0
+        self.hide_count = 0
         self.exec_count = 0
         self.closed = False
+        self.visible = False
         self.complete_requested = FakeSignal()
         self.snooze_requested = FakeSignal()
         self.finished = FakeSignal()
@@ -139,6 +141,11 @@ class FakeNotificationDialog:
 
     def show(self) -> None:
         self.show_count += 1
+        self.visible = True
+
+    def hide(self) -> None:
+        self.hide_count += 1
+        self.visible = False
 
     def exec(self) -> QDialog.DialogCode:
         self.exec_count += 1
@@ -278,6 +285,37 @@ class NotificationBatchIntegrationTest(unittest.TestCase):
 
             window.toggle_window_visibility()
             self.assertEqual(dialog.show_count, 1)
+
+    def test_tray_menu_hides_and_restores_notification_batch(self) -> None:
+        task = make_todo(1, "随主窗口隐藏")
+        FakeNotificationDialog.instances = []
+        with (
+            patch("todo_app.main_window.load_todos", return_value=[]),
+            patch("todo_app.main_window.save_todos"),
+            patch("todo_app.main_window.NotificationDialog", FakeNotificationDialog),
+        ):
+            window = ModernTodoAppWindow()
+            window.master_timer.stop()
+            self.addCleanup(self._close_window, window)
+            dialog = FakeNotificationDialog([(task, True)], window)
+            window._notification_dialog = dialog
+            dialog.show()
+            window.show()
+            self.app.processEvents()
+
+            window.toggle_window_visibility()
+
+            self.assertTrue(window.isHidden())
+            self.assertIs(window._notification_dialog, dialog)
+            self.assertFalse(dialog.closed)
+            self.assertEqual(dialog.hide_count, 1)
+            self.assertFalse(dialog.visible)
+
+            window.toggle_window_visibility()
+
+            self.assertTrue(window.isVisible())
+            self.assertEqual(dialog.show_count, 2)
+            self.assertTrue(dialog.visible)
 
     def test_batch_actions_update_only_requested_tasks_once(self) -> None:
         tasks = [make_todo(todo_id, f"任务{todo_id}") for todo_id in (1, 2, 3)]
