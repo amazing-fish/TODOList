@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, time, timezone
 from typing import Optional
 
-from PySide6.QtCore import Qt, Slot
+from PySide6.QtCore import QDateTime, QTime, Qt, Slot
 from PySide6.QtWidgets import (
     QDateEdit,
     QDialog,
@@ -28,6 +28,12 @@ from .constants import (
 )
 from .utils import get_icon
 from .theme import ThemeColors, get_theme_manager
+
+
+def _default_due_datetime(now_qdt: QDateTime) -> QDateTime:
+    target = now_qdt.addSecs(3600)
+    hidden_msecs = target.time().second() * 1000 + target.time().msec()
+    return target.addMSecs(-hidden_msecs)
 
 
 class NotificationDialog(QDialog):
@@ -208,7 +214,8 @@ class TaskEditDialog(QDialog):
         self.todo_item = todo_item
         self.date_edit: Optional[QDateEdit] = None
         self.time_edit: Optional[QTimeEdit] = None
-        self._original_due_selection: Optional[tuple[str, str]] = None
+        self._preserved_due_selection: Optional[tuple[str, str]] = None
+        self._preserved_due_date_iso: Optional[str] = None
         self._theme_manager = get_theme_manager()
         self._palette: ThemeColors = self._theme_manager.current_palette
         self._theme_manager.theme_changed.connect(self._on_theme_changed)
@@ -220,7 +227,7 @@ class TaskEditDialog(QDialog):
             self.setWindowTitle("添加新的待办事项")
 
     def _build_ui(self) -> None:
-        from PySide6.QtCore import QDate, QDateTime, QTime
+        from PySide6.QtCore import QDate
         from PySide6.QtWidgets import QComboBox, QFrame, QTextEdit
 
         self.setMinimumWidth(500)
@@ -304,12 +311,14 @@ class TaskEditDialog(QDialog):
         layout.addWidget(self.button_box)
 
         if not self.todo_item:
-            now_qdt = QDateTime.currentDateTime()
-            default_qtime = now_qdt.addSecs(3600).time()
-            if default_qtime.hour() < 7:
-                default_qtime = QTime(9, 0, 0)
-            self.date_edit.setDate(QDate.currentDate())
-            self.time_edit.setTime(default_qtime)
+            default_due = _default_due_datetime(QDateTime.currentDateTime())
+            self.date_edit.setDate(default_due.date())
+            self.time_edit.setTime(default_due.time())
+            self._preserved_due_selection = self._current_due_selection()
+            py_default_due_utc = default_due.toUTC().toPython()
+            if py_default_due_utc.tzinfo is None:
+                py_default_due_utc = py_default_due_utc.replace(tzinfo=timezone.utc)
+            self._preserved_due_date_iso = py_default_due_utc.isoformat()
 
         self.resize(400, 300)
         self._apply_palette(self._palette)
@@ -396,7 +405,8 @@ class TaskEditDialog(QDialog):
 
                 self.date_edit.setDate(local_qdt.date())
                 self.time_edit.setTime(local_qdt.time())
-                self._original_due_selection = self._current_due_selection()
+                self._preserved_due_selection = self._current_due_selection()
+                self._preserved_due_date_iso = self.todo_item["dueDate"]
                 self.set_due_date_button.setChecked(True)
             except ValueError:
                 print(f"错误: 编辑任务时截止日期格式无效: {self.todo_item['dueDate']}")
@@ -425,11 +435,10 @@ class TaskEditDialog(QDialog):
             return None
 
         if (
-            self.todo_item
-            and self.todo_item.get("dueDate")
-            and self._current_due_selection() == self._original_due_selection
+            self._preserved_due_date_iso
+            and self._current_due_selection() == self._preserved_due_selection
         ):
-            return self.todo_item["dueDate"]
+            return self._preserved_due_date_iso
 
         selected_time = self.time_edit.time()
         visible_time = QTime(selected_time.hour(), selected_time.minute())
