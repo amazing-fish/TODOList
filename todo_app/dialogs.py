@@ -6,8 +6,7 @@ from typing import Optional
 
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtWidgets import (
-    QCalendarWidget,
-    QDateTimeEdit,
+    QDateEdit,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
@@ -19,11 +18,11 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QMenu,
+    QTimeEdit,
 )
 
 from .constants import (
     APP_ICON_PATH,
-    CALENDAR_ICON_PATH,
     REMINDER_OPTIONS_MAP,
     REMINDER_SECONDS_TO_TEXT_MAP,
 )
@@ -207,8 +206,9 @@ class TaskEditDialog(QDialog):
     def __init__(self, todo_item: Optional[dict] = None, parent=None):
         super().__init__(parent)
         self.todo_item = todo_item
-        self._internal_due_date = None
-        self.time_edit: Optional[QDateTimeEdit] = None
+        self.date_edit: Optional[QDateEdit] = None
+        self.time_edit: Optional[QTimeEdit] = None
+        self._original_due_selection: Optional[tuple[str, str]] = None
         self._theme_manager = get_theme_manager()
         self._palette: ThemeColors = self._theme_manager.current_palette
         self._theme_manager.theme_changed.connect(self._on_theme_changed)
@@ -277,21 +277,18 @@ class TaskEditDialog(QDialog):
         self.due_date_controls_widget = QWidget()
         due_date_controls_layout = QHBoxLayout(self.due_date_controls_widget)
         due_date_controls_layout.setContentsMargins(0, 5, 0, 0)
-        due_date_controls_layout.addWidget(QLabel("日期:"))
-        self.selected_date_label = QLabel("未设置")
-        self.selected_date_label.setObjectName("selectedDateLabel")
-        due_date_controls_layout.addWidget(self.selected_date_label)
-        self.pick_date_button = QPushButton(icon=get_icon(CALENDAR_ICON_PATH, "📅"))
-        self.pick_date_button.setObjectName("pickDateButton")
-        self.pick_date_button.setToolTip("选择日期")
-        self.pick_date_button.clicked.connect(self.show_calendar_popup)
-        due_date_controls_layout.addWidget(self.pick_date_button)
-        due_date_controls_layout.addSpacerItem(QSpacerItem(10, 0))
         due_date_controls_layout.addWidget(QLabel("时间:"))
-        self.time_edit = QDateTimeEdit()
+        self.time_edit = QTimeEdit()
         self.time_edit.setDisplayFormat("HH:mm")
-        self.time_edit.setCalendarPopup(False)
         due_date_controls_layout.addWidget(self.time_edit, 1)
+        due_date_controls_layout.addSpacerItem(QSpacerItem(10, 0))
+        due_date_controls_layout.addWidget(QLabel("日期:"))
+        self.date_edit = QDateEdit()
+        self.date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.date_edit.setCalendarPopup(True)
+        self.date_edit.setMinimumDate(QDate(2000, 1, 1))
+        self.date_edit.setDate(QDate.currentDate())
+        due_date_controls_layout.addWidget(self.date_edit, 1)
         due_date_layout.addWidget(self.due_date_controls_widget)
 
         layout.addWidget(due_date_frame)
@@ -311,7 +308,8 @@ class TaskEditDialog(QDialog):
             default_qtime = now_qdt.addSecs(3600).time()
             if default_qtime.hour() < 7:
                 default_qtime = QTime(9, 0, 0)
-            self.time_edit.setDateTime(QDateTime(QDate.currentDate(), default_qtime))
+            self.date_edit.setDate(QDate.currentDate())
+            self.time_edit.setTime(default_qtime)
 
         self.resize(400, 300)
         self._apply_palette(self._palette)
@@ -330,24 +328,17 @@ class TaskEditDialog(QDialog):
                 border-radius: 4px;
                 padding: 6px 10px;
             }}
-            QTextEdit, QComboBox, QDateTimeEdit {{
+            QTextEdit, QComboBox, QDateEdit, QTimeEdit {{
                 padding: 9px; border: 1px solid {palette.input_border}; border-radius: 4px;
                 font-size: 10pt; background-color: {palette.input_background};
                 color: {palette.text_primary};
             }}
-            QTextEdit:focus, QComboBox:focus, QDateTimeEdit:focus {{
+            QTextEdit:focus, QComboBox:focus, QDateEdit:focus, QTimeEdit:focus {{
                 border: 1.5px solid {palette.accent};
             }}
-            QPushButton#pickDateButton {{
-                padding: 7px; border: 1px solid {palette.input_border}; border-radius: 4px;
+            QCalendarWidget QWidget {{
                 background-color: {palette.secondary_background};
                 color: {palette.text_primary};
-            }}
-            QPushButton#pickDateButton:hover {{ background-color: {palette.action_hover_bg}; }}
-            QLabel#selectedDateLabel {{
-                 padding: 9px; border: 1px solid {palette.input_border}; border-radius: 4px;
-                 background-color: {palette.secondary_background};
-                 color: {palette.text_secondary};
             }}
             QPushButton#setDueDateButton {{
                 background-color: {palette.accent};
@@ -403,10 +394,10 @@ class TaskEditDialog(QDialog):
                 )
                 local_qdt = qdt_utc.toLocalTime()
 
-                self._internal_due_date = local_qdt.date()
-                self.time_edit.setDateTime(local_qdt)
+                self.date_edit.setDate(local_qdt.date())
+                self.time_edit.setTime(local_qdt.time())
+                self._original_due_selection = self._current_due_selection()
                 self.set_due_date_button.setChecked(True)
-                self.update_selected_date_label()
             except ValueError:
                 print(f"错误: 编辑任务时截止日期格式无效: {self.todo_item['dueDate']}")
                 self.set_due_date_button.setChecked(False)
@@ -418,99 +409,56 @@ class TaskEditDialog(QDialog):
         )
 
     def toggle_due_date_controls(self, checked: bool) -> None:
-        from PySide6.QtCore import QDate
-
         self.due_date_controls_widget.setVisible(checked)
         self.set_due_date_button.setText("清除截止时间" if checked else "设置截止时间")
-        if checked:
-            if not self._internal_due_date:
-                self._internal_due_date = QDate.currentDate()
-            self.update_selected_date_label()
-        else:
-            self._internal_due_date = None
 
-    def update_selected_date_label(self) -> None:
-        from PySide6.QtCore import QDate
-
-        if self._internal_due_date:
-            if self._internal_due_date == QDate.currentDate():
-                text = "<b>今日</b>"
-            elif self._internal_due_date == QDate.currentDate().addDays(1):
-                text = "<b>明日</b>"
-            else:
-                text = self._internal_due_date.toString("yyyy-MM-dd")
-            self.selected_date_label.setText(text)
-        else:
-            self.selected_date_label.setText("未设置")
-
-    def show_calendar_popup(self) -> None:
-        from PySide6.QtCore import QDate
-
-        calendar_dialog = QDialog(self)
-        calendar_dialog.setWindowTitle("选择截止日期")
-        calendar_dialog.setWindowIcon(get_icon(CALENDAR_ICON_PATH, "📅"))
-        layout = QVBoxLayout(calendar_dialog)
-        calendar_widget = QCalendarWidget(calendar_dialog)
-        calendar_widget.setGridVisible(True)
-        calendar_widget.setSelectedDate(self._internal_due_date or QDate.currentDate())
-        calendar_widget.setMinimumDate(QDate(2000, 1, 1))
-
-        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        button_box.accepted.connect(calendar_dialog.accept)
-        button_box.rejected.connect(calendar_dialog.reject)
-        layout.addWidget(calendar_widget)
-        layout.addWidget(button_box)
-
-        calendar_dialog.setStyleSheet(
-            f"""
-            QDialog {{ background-color: {self._palette.background}; color: {self._palette.text_primary}; }}
-            QCalendarWidget QWidget {{
-                background-color: {self._palette.secondary_background};
-                color: {self._palette.text_primary};
-            }}
-            QPushButton {{
-                background-color: {self._palette.accent};
-                color: {self._palette.inverse_text};
-                border-radius: 4px;
-                padding: 6px 14px;
-            }}
-            QPushButton:hover {{ background-color: {self._palette.accent_hover}; }}
-            """
+    def _current_due_selection(self) -> tuple[str, str]:
+        return (
+            self.date_edit.date().toString("yyyy-MM-dd"),
+            self.time_edit.time().toString("HH:mm"),
         )
 
-        if calendar_dialog.exec():
-            self._internal_due_date = calendar_widget.selectedDate()
-            self.update_selected_date_label()
+    def _serialize_due_date(self) -> Optional[str]:
+        from PySide6.QtCore import QDateTime, QTime
+
+        if not self.set_due_date_button.isChecked():
+            return None
+
+        if (
+            self.todo_item
+            and self.todo_item.get("dueDate")
+            and self._current_due_selection() == self._original_due_selection
+        ):
+            return self.todo_item["dueDate"]
+
+        selected_time = self.time_edit.time()
+        visible_time = QTime(selected_time.hour(), selected_time.minute())
+        py_due_date_utc = QDateTime(self.date_edit.date(), visible_time).toUTC().toPython()
+        if py_due_date_utc.tzinfo is None:
+            py_due_date_utc = py_due_date_utc.replace(tzinfo=timezone.utc)
+        return py_due_date_utc.isoformat()
 
     def get_task_data(self) -> dict:
-        from PySide6.QtCore import QDateTime
-
-        due_date_iso_utc = None
-        if self.set_due_date_button.isChecked() and self._internal_due_date:
-            py_due_date_utc = QDateTime(self._internal_due_date, self.time_edit.time()).toUTC().toPython()
-            if py_due_date_utc.tzinfo is None:
-                py_due_date_utc = py_due_date_utc.replace(tzinfo=timezone.utc)
-            due_date_iso_utc = py_due_date_utc.isoformat()
-
         return {
             "text": self.task_input.toPlainText().strip(),
             "priority": self.priority_combo.currentText(),
-            "dueDate": due_date_iso_utc,
+            "dueDate": self._serialize_due_date(),
             "reminderOffset": REMINDER_OPTIONS_MAP.get(self.reminder_combo.currentText(), 0),
         }
 
     def accept(self) -> None:  # type: ignore[override]
-        from PySide6.QtCore import QDateTime
-
         text = self.task_input.toPlainText().strip()
         if not text:
             QMessageBox.warning(self, "输入错误", "待办事项内容不能为空！")
             return
 
-        if self.set_due_date_button.isChecked() and self._internal_due_date:
-            py_due_date_utc = QDateTime(self._internal_due_date, self.time_edit.time()).toUTC().toPython()
+        due_date_iso = self._serialize_due_date()
+        if due_date_iso:
+            py_due_date_utc = datetime.fromisoformat(due_date_iso.replace("Z", "+00:00"))
             if py_due_date_utc.tzinfo is None:
                 py_due_date_utc = py_due_date_utc.replace(tzinfo=timezone.utc)
+            else:
+                py_due_date_utc = py_due_date_utc.astimezone(timezone.utc)
             if self.todo_item is None and py_due_date_utc <= datetime.now(timezone.utc):
                 QMessageBox.warning(self, "时间错误", "新任务的截止时间必须是未来的某个时间点！")
                 return
