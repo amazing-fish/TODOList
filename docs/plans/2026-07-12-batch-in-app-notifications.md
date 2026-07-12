@@ -82,9 +82,11 @@ Expected: FAIL；当前实现为每个任务调用一次模态 `exec()`。
 **Step 3: Implement batch collection**
 
 - 将 `active_notifications` 替换为单一 `_notification_dialog` 引用。
+- 提醒扫描遍历完整 `self.todos`，当前可见卡片只负责刷新倒计时，避免筛选隐藏任务后漏检。
 - 把 `_check_for_notification` 改为返回可选 `(todo, is_due)` 请求，并在返回前更新 `notifiedForReminder`、`notifiedForDue` 与 `lastNotifiedAt`。
 - `tick_update` 收集本轮请求，统一保存并调用 `_show_notification_batch`。
 - `_show_notification_batch` 只使用 `show()`；已有窗口则追加。
+- 汇总窗口启用 `WA_DeleteOnClose`，关闭后清理主窗口引用并释放 Qt 子对象与主题信号连接。
 - 同轮根据最高严重级播放一次软件音，不调用 `QSystemTrayIcon.showMessage`。
 
 **Step 4: Run integration tests and full suite**
@@ -95,6 +97,8 @@ Expected: FAIL；当前实现为每个任务调用一次模态 `exec()`。
 ```
 
 Expected: targeted and full suite pass。
+
+另验证筛选为“已完成”时隐藏的未完成到期任务仍进入汇总窗口，连续关闭批次后父窗口不残留 `NotificationDialog` 子对象。
 
 ### Task 3: 批量完成、推迟与外部状态同步
 

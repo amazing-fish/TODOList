@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication, QCheckBox, QDialog, QLabel  # noqa: E402
 
 from todo_app.dialogs import NotificationDialog  # noqa: E402
@@ -56,7 +57,8 @@ class NotificationDialogTest(unittest.TestCase):
         dialog = NotificationDialog(
             [(make_todo(1, "第一项"), True), (make_todo(2, "第二项"), True)]
         )
-        self.addCleanup(dialog.close)
+        destroyed = []
+        dialog.destroyed.connect(lambda: destroyed.append(True))
         second_checkbox = dialog.findChild(QCheckBox, "notificationSelect_2")
         self.assertIsNotNone(second_checkbox)
         second_checkbox.setChecked(False)
@@ -77,9 +79,9 @@ class NotificationDialogTest(unittest.TestCase):
         self.assertEqual(dialog.task_ids(), [2])
         self.assertTrue(dialog.isVisible())
         dialog.remove_tasks([2])
+        self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         self.app.processEvents()
-        self.assertEqual(dialog.task_ids(), [])
-        self.assertFalse(dialog.isVisible())
+        self.assertEqual(destroyed, [True])
 
     def test_common_three_task_batch_expands_before_scrolling(self) -> None:
         dialog = NotificationDialog(
@@ -201,6 +203,54 @@ class NotificationBatchIntegrationTest(unittest.TestCase):
             self.assertEqual(sound_mock.call_count, 2)
             self.assertGreaterEqual(save_mock.call_count, 2)
             window.tray_icon.showMessage.assert_not_called()
+
+    def test_filtered_out_incomplete_task_still_triggers_in_app_reminder(self) -> None:
+        task = make_todo(1, "筛选外任务")
+        task["dueDate"] = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+        FakeNotificationDialog.instances = []
+        with (
+            patch("todo_app.main_window.load_todos", return_value=[]),
+            patch("todo_app.main_window.save_todos"),
+            patch("todo_app.main_window.play_sound_effect"),
+            patch("todo_app.main_window.NotificationDialog", FakeNotificationDialog),
+        ):
+            window = ModernTodoAppWindow()
+            window.master_timer.stop()
+            window._ensure_window_visible_for_notification = MagicMock()
+            self.addCleanup(self._close_window, window)
+            window.todos = [task]
+            window.filter_combo.setCurrentText("已完成")
+            window.update_list_widget()
+
+            window.tick_update()
+
+            self.assertTrue(task["notifiedForDue"])
+            self.assertEqual(len(FakeNotificationDialog.instances), 1)
+            self.assertEqual(FakeNotificationDialog.instances[0].task_ids(), [1])
+
+    def test_closed_notification_dialog_is_deleted_from_parent(self) -> None:
+        task = make_todo(1, "关闭后释放")
+        with (
+            patch("todo_app.main_window.load_todos", return_value=[]),
+            patch("todo_app.main_window.save_todos"),
+            patch("todo_app.main_window.play_sound_effect"),
+        ):
+            window = ModernTodoAppWindow()
+            window.master_timer.stop()
+            window._ensure_window_visible_for_notification = MagicMock()
+            self.addCleanup(self._close_window, window)
+
+            window._show_notification_batch([(task, True)])
+            dialog = window._notification_dialog
+            self.assertIsNotNone(dialog)
+            self.assertEqual(len(window.findChildren(NotificationDialog)), 1)
+
+            dialog.reject()
+            self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+            self.app.processEvents()
+
+            self.assertIsNone(window._notification_dialog)
+            self.assertEqual(window.findChildren(NotificationDialog), [])
 
     def test_batch_actions_update_only_requested_tasks_once(self) -> None:
         tasks = [make_todo(todo_id, f"任务{todo_id}") for todo_id in (1, 2, 3)]

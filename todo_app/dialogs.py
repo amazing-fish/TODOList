@@ -59,6 +59,7 @@ class NotificationDialog(QDialog):
         self.setWindowIcon(get_icon(APP_ICON_PATH, "🔔"))
         self.setMinimumWidth(460)
         self.setModal(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(15)

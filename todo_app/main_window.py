@@ -322,20 +322,7 @@ class ModernTodoAppWindow(QMainWindow):
         now_utc = datetime.now(timezone.utc)
         items_changed = False
         notification_requests: list[tuple[dict, bool]] = []
-        for i in range(self.list_widget.count()):
-            list_item = self.list_widget.item(i)
-            if not list_item:
-                continue
-            item_widget = self.list_widget.itemWidget(list_item)
-            if not isinstance(item_widget, TodoItemWidget):
-                continue
-
-            todo = item_widget.todo_item
-            original_ref = next((t for t in self.todos if t["id"] == todo["id"]), None)
-            if not original_ref:
-                continue
-
-            snooze_updated = False
+        for original_ref in self.todos:
             snooze_until = original_ref.get("snoozeUntil")
             if snooze_until:
                 try:
@@ -347,27 +334,27 @@ class ModernTodoAppWindow(QMainWindow):
                                 "notifiedForDue": False,
                             }
                         )
-                        snooze_updated = True
                         items_changed = True
                 except ValueError:
                     original_ref["snoozeUntil"] = None
-                    snooze_updated = True
                     items_changed = True
-
-            if snooze_updated:
-                todo.update(
-                    {
-                        "snoozeUntil": original_ref["snoozeUntil"],
-                        "notifiedForReminder": original_ref["notifiedForReminder"],
-                        "notifiedForDue": original_ref["notifiedForDue"],
-                    }
-                )
-
-            item_widget.update_timer_display(now_utc)
             notification_request = self._check_for_notification(original_ref, now_utc)
             if notification_request:
                 notification_requests.append(notification_request)
                 items_changed = True
+
+        todos_by_id = {todo.get("id"): todo for todo in self.todos}
+        for index in range(self.list_widget.count()):
+            list_item = self.list_widget.item(index)
+            if not list_item:
+                continue
+            item_widget = self.list_widget.itemWidget(list_item)
+            if not isinstance(item_widget, TodoItemWidget):
+                continue
+            original_ref = todos_by_id.get(item_widget.todo_item.get("id"))
+            if original_ref:
+                item_widget.todo_item.update(original_ref)
+            item_widget.update_timer_display(now_utc)
 
         if items_changed:
             save_todos(self.todos)
@@ -442,7 +429,8 @@ class ModernTodoAppWindow(QMainWindow):
         dialog.activateWindow()
 
     def _on_notification_dialog_finished(self, _result: int) -> None:
-        self._notification_dialog = None
+        if self._notification_dialog is self.sender():
+            self._notification_dialog = None
 
     def _handle_notification_complete(self, todo_ids: list[int]) -> None:
         requested_ids = {int(todo_id) for todo_id in todo_ids}
