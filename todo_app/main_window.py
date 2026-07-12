@@ -478,6 +478,21 @@ class ModernTodoAppWindow(QMainWindow):
         if normalized_id is not None:
             self._remove_notification_tasks([normalized_id])
 
+    def _restore_notification_dialog(self) -> None:
+        if self._notification_dialog is None:
+            return
+        self._notification_dialog.show()
+        self._notification_dialog.raise_()
+        self._notification_dialog.activateWindow()
+
+    def _close_notification_dialog(self) -> None:
+        if self._notification_dialog is None:
+            return
+        dialog = self._notification_dialog
+        dialog.close()
+        if self._notification_dialog is dialog:
+            self._notification_dialog = None
+
     def _ensure_window_visible_for_notification(self) -> None:
         if self._quitting_app:
             return
@@ -885,6 +900,7 @@ class ModernTodoAppWindow(QMainWindow):
             self.showNormal()
             self.raise_()
             self.activateWindow()
+            self._restore_notification_dialog()
         if self.isVisible():
             self._last_minimize_to_tray_notified = False
 
@@ -965,10 +981,6 @@ class ModernTodoAppWindow(QMainWindow):
 
     # --- 关闭流程 ---
     def closeEvent(self, event: QEvent) -> None:  # noqa: N802
-        if self._notification_dialog is not None:
-            self._notification_dialog.close()
-            self._notification_dialog = None
-
         self.save_geometry_and_state()
 
         tray_icon = getattr(self, "tray_icon", None)
@@ -983,6 +995,7 @@ class ModernTodoAppWindow(QMainWindow):
             )
             self._last_minimize_to_tray_notified = True
         else:
+            self._close_notification_dialog()
             if not self._quitting_app:
                 self.quit_application(from_close_event=True)
             event.accept()
@@ -992,6 +1005,7 @@ class ModernTodoAppWindow(QMainWindow):
             return
         self._quit_app_called_flag = True
         self._quitting_app = True
+        self._close_notification_dialog()
         if hasattr(self, "master_timer"):
             self.master_timer.stop()
         save_todos(self.todos)

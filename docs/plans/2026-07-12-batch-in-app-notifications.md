@@ -125,6 +125,7 @@ Expected: targeted and full suite pass。
 - 每个批量操作只保存和刷新一次。
 - 增加 `_remove_notification_task(todo_id)`，供编辑、删除、列表完成和应用关闭复用。
 - 对话框 `finished` 后仅清理引用，不重置已写入的提醒标记。
+- 主窗口关闭到托盘时保留提醒实例，从托盘恢复时重新 `show/raise/activate`；仅在真正退出时关闭提醒实例。
 
 **Step 4: Verify GREEN**
 

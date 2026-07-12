@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent  # noqa: E402
+from PySide6.QtGui import QCloseEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication, QCheckBox, QDialog, QLabel  # noqa: E402
 
 from todo_app.dialogs import NotificationDialog  # noqa: E402
@@ -251,6 +252,32 @@ class NotificationBatchIntegrationTest(unittest.TestCase):
 
             self.assertIsNone(window._notification_dialog)
             self.assertEqual(window.findChildren(NotificationDialog), [])
+
+    def test_minimize_to_tray_preserves_and_restores_notification_batch(self) -> None:
+        task = make_todo(1, "保留提醒")
+        FakeNotificationDialog.instances = []
+        with (
+            patch("todo_app.main_window.load_todos", return_value=[]),
+            patch("todo_app.main_window.save_todos"),
+            patch("todo_app.main_window.NotificationDialog", FakeNotificationDialog),
+        ):
+            window = ModernTodoAppWindow()
+            window.master_timer.stop()
+            self.addCleanup(self._close_window, window)
+            dialog = FakeNotificationDialog([(task, True)], window)
+            window._notification_dialog = dialog
+            window.tray_icon.isVisible = MagicMock(return_value=True)
+            window.tray_icon.showMessage = MagicMock()
+            event = QCloseEvent()
+
+            window.closeEvent(event)
+
+            self.assertFalse(event.isAccepted())
+            self.assertIs(window._notification_dialog, dialog)
+            self.assertFalse(dialog.closed)
+
+            window.toggle_window_visibility()
+            self.assertEqual(dialog.show_count, 1)
 
     def test_batch_actions_update_only_requested_tasks_once(self) -> None:
         tasks = [make_todo(todo_id, f"任务{todo_id}") for todo_id in (1, 2, 3)]
