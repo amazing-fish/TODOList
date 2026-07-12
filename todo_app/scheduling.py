@@ -21,6 +21,22 @@ def _parse_utc_datetime(value: object) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _due_dates_are_equivalent(existing_value: object, updated_value: object) -> bool:
+    """按 Qt 可表达的毫秒精度比较两个截止时间是否为同一时刻。"""
+
+    if existing_value == updated_value:
+        return True
+
+    existing_dt = _parse_utc_datetime(existing_value)
+    updated_dt = _parse_utc_datetime(updated_value)
+    if existing_dt is None or updated_dt is None:
+        return False
+
+    existing_ms = existing_dt.replace(microsecond=(existing_dt.microsecond // 1000) * 1000)
+    updated_ms = updated_dt.replace(microsecond=(updated_dt.microsecond // 1000) * 1000)
+    return existing_ms == updated_ms
+
+
 def build_snooze_update_fields(
     todo: dict[str, Any],
     snooze_duration: timedelta,
@@ -59,16 +75,20 @@ def build_snooze_update_fields(
 def build_edit_update_fields(existing: dict[str, Any], updated_data: dict[str, Any]) -> dict[str, Any]:
     """生成编辑保存字段，仅在调度设置变化时重置提醒状态。"""
 
+    due_date_changed = not _due_dates_are_equivalent(
+        existing.get("dueDate"),
+        updated_data["dueDate"],
+    )
+
     updated_fields: dict[str, Any] = {
         "text": updated_data["text"],
         "priority": updated_data["priority"],
-        "dueDate": updated_data["dueDate"],
+        "dueDate": updated_data["dueDate"] if due_date_changed else existing.get("dueDate"),
         "reminderOffset": updated_data["reminderOffset"],
     }
 
     schedule_changed = (
-        existing.get("dueDate") != updated_data["dueDate"]
-        or existing.get("reminderOffset", 0) != updated_data["reminderOffset"]
+        due_date_changed or existing.get("reminderOffset", 0) != updated_data["reminderOffset"]
     )
     if schedule_changed:
         updated_fields.update(
