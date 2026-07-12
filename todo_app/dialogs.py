@@ -4,8 +4,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta, time, timezone
 from typing import Optional
 
-from PySide6.QtCore import QDateTime, QTime, Qt, Slot
+from PySide6.QtCore import QDateTime, QTime, Qt, Signal, Slot
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDateEdit,
     QDialog,
     QDialogButtonBox,
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpacerItem,
     QSizePolicy,
     QVBoxLayout,
@@ -37,53 +39,49 @@ def _default_due_datetime(now_qdt: QDateTime) -> QDateTime:
 
 
 class NotificationDialog(QDialog):
-    """提醒任务的弹窗对话框。"""
+    """在一个软件窗口中汇总待处理的任务提醒。"""
 
-    def __init__(self, todo_item: dict, parent=None):
+    complete_requested = Signal(list)
+    snooze_requested = Signal(list, object)
+
+    def __init__(self, requests: list[tuple[dict, bool]], parent=None):
         super().__init__(parent)
-        self.todo_item = todo_item
-        self.snooze_duration: Optional[timedelta] = None
+        self._task_rows: dict[int, dict[str, object]] = {}
         self._theme_manager = get_theme_manager()
         self._palette: ThemeColors = self._theme_manager.current_palette
         self._theme_manager.theme_changed.connect(self._on_theme_changed)
         self._build_ui(parent)
+        self.add_or_update_tasks(requests)
         self._apply_palette(self._palette)
 
     def _build_ui(self, parent=None) -> None:
         self.setWindowTitle("任务提醒")
         self.setWindowIcon(get_icon(APP_ICON_PATH, "🔔"))
-        self.setMinimumWidth(350)
+        self.setMinimumWidth(460)
+        self.setModal(False)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(15)
         layout.setContentsMargins(20, 20, 20, 20)
 
-        self.title_label = QLabel("<b>任务到期提醒</b>")
+        self.title_label = QLabel()
         layout.addWidget(self.title_label)
 
-        self.text_label = QLabel(f"任务: <b>{self.todo_item['text']}</b>")
-        self.text_label.setWordWrap(True)
-        layout.addWidget(self.text_label)
-
-        if self.todo_item.get("dueDate"):
-            try:
-                due_date = datetime.fromisoformat(self.todo_item["dueDate"].replace("Z", "+00:00"))
-                self.due_label = QLabel(
-                    f"截止时间: {due_date.astimezone().strftime('%Y-%m-%d %H:%M')}"
-                )
-                layout.addWidget(self.due_label)
-            except ValueError:
-                print(
-                    f"提醒对话框中任务 '{self.todo_item['text']}' 的截止日期格式无效: {self.todo_item['dueDate']}"
-                )
-                self.due_label = None
-        else:
-            self.due_label = None
+        self.tasks_container = QWidget()
+        self.tasks_layout = QVBoxLayout(self.tasks_container)
+        self.tasks_layout.setContentsMargins(0, 0, 0, 0)
+        self.tasks_layout.setSpacing(8)
+        self.tasks_scroll = QScrollArea()
+        self.tasks_scroll.setWidgetResizable(True)
+        self.tasks_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.tasks_scroll.setMaximumHeight(320)
+        self.tasks_scroll.setWidget(self.tasks_container)
+        layout.addWidget(self.tasks_scroll)
 
         button_layout = QHBoxLayout()
-        self.complete_button = QPushButton(get_icon("", "✓"), "标记为完成")
-        self.complete_button.clicked.connect(self.accept)
-        self.dismiss_button = QPushButton("忽略")
+        self.complete_button = QPushButton(get_icon("", "✓"), "完成选中")
+        self.complete_button.clicked.connect(self._emit_complete_requested)
+        self.dismiss_button = QPushButton("忽略全部")
         self.dismiss_button.clicked.connect(self.reject)
 
         snooze_widget = QWidget()
@@ -91,7 +89,7 @@ class NotificationDialog(QDialog):
         snooze_layout.setContentsMargins(0, 0, 0, 0)
         snooze_layout.setSpacing(1)
 
-        self.snooze_default_button = QPushButton(get_icon("", "⏰"), " 15分钟后提醒")
+        self.snooze_default_button = QPushButton(get_icon("", "⏰"), " 选中推迟15分钟")
         self.snooze_default_button.setObjectName("snoozeDefaultButton")
         self.snooze_default_button.clicked.connect(self.snooze_default)
 
@@ -110,19 +108,125 @@ class NotificationDialog(QDialog):
         snooze_layout.addWidget(self.snooze_menu_button)
 
         button_layout.addWidget(self.complete_button)
-        button_layout.addSpacerItem(QSpacerItem(20, 10, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
+        button_layout.addSpacerItem(
+            QSpacerItem(20, 10, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        )
         button_layout.addWidget(snooze_widget)
         button_layout.addWidget(self.dismiss_button)
         layout.addLayout(button_layout)
 
-        if parent:
-            screen = parent.screen() if hasattr(parent, "screen") else None
-            if screen:
-                screen_geo = screen.availableGeometry()
-                self.adjustSize()
-                x = screen_geo.right() - self.width() - 20
-                y = screen_geo.bottom() - self.height() - 20
-                self.move(max(screen_geo.left(), x), max(screen_geo.top(), y))
+    def add_or_update_tasks(self, requests: list[tuple[dict, bool]]) -> None:
+        for todo_item, is_due in requests:
+            todo_id = int(todo_item["id"])
+            existing = self._task_rows.get(todo_id)
+            if existing:
+                existing["todo_item"] = todo_item
+                existing["is_due"] = bool(existing["is_due"] or is_due)
+                self._update_task_row(todo_id)
+                continue
+
+            row_widget = QWidget()
+            row_widget.setObjectName("notificationRow")
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(10, 8, 10, 8)
+            row_layout.setSpacing(10)
+
+            checkbox = QCheckBox()
+            checkbox.setObjectName(f"notificationSelect_{todo_id}")
+            checkbox.setChecked(True)
+            checkbox.setToolTip("选择此任务进行批量处理")
+            row_layout.addWidget(checkbox)
+
+            content_layout = QVBoxLayout()
+            content_layout.setContentsMargins(0, 0, 0, 0)
+            content_layout.setSpacing(3)
+            text_label = QLabel()
+            text_label.setWordWrap(True)
+            text_font = text_label.font()
+            text_font.setBold(True)
+            text_label.setFont(text_font)
+            detail_label = QLabel()
+            status_label = QLabel()
+            status_label.setObjectName(f"notificationStatus_{todo_id}")
+            content_layout.addWidget(text_label)
+            content_layout.addWidget(detail_label)
+            content_layout.addWidget(status_label)
+            row_layout.addLayout(content_layout, 1)
+
+            self.tasks_layout.addWidget(row_widget)
+            self._task_rows[todo_id] = {
+                "todo_item": todo_item,
+                "is_due": is_due,
+                "widget": row_widget,
+                "checkbox": checkbox,
+                "text_label": text_label,
+                "detail_label": detail_label,
+                "status_label": status_label,
+            }
+            self._update_task_row(todo_id)
+
+        self._update_title()
+        self._apply_palette(self._palette)
+        self._adjust_size_and_position()
+
+    def _update_task_row(self, todo_id: int) -> None:
+        row = self._task_rows[todo_id]
+        todo_item = row["todo_item"]
+        row["text_label"].setText(str(todo_item.get("text", "无内容")))
+        row["detail_label"].setText(self._format_due_text(todo_item))
+        row["status_label"].setText("已到期" if row["is_due"] else "提前提醒")
+
+    def _format_due_text(self, todo_item: dict) -> str:
+        due_date_str = todo_item.get("dueDate")
+        if not due_date_str:
+            return "未设置截止时间"
+        try:
+            due_date = datetime.fromisoformat(due_date_str.replace("Z", "+00:00"))
+        except ValueError:
+            return "截止时间格式错误"
+        return f"截止时间: {due_date.astimezone().strftime('%Y-%m-%d %H:%M')}"
+
+    def _update_title(self) -> None:
+        self.title_label.setText(f"{len(self._task_rows)} 个任务需要处理")
+
+    def _adjust_size_and_position(self) -> None:
+        visible_rows_height = min(320, max(80, len(self._task_rows) * 72))
+        self.tasks_scroll.setFixedHeight(visible_rows_height)
+        self.adjustSize()
+        parent = self.parentWidget()
+        screen = parent.screen() if parent and hasattr(parent, "screen") else None
+        if screen:
+            screen_geo = screen.availableGeometry()
+            x = screen_geo.right() - self.width() - 20
+            y = screen_geo.bottom() - self.height() - 20
+            self.move(max(screen_geo.left(), x), max(screen_geo.top(), y))
+
+    def task_ids(self) -> list[int]:
+        return list(self._task_rows)
+
+    def selected_task_ids(self) -> list[int]:
+        return [
+            todo_id
+            for todo_id, row in self._task_rows.items()
+            if row["checkbox"].isChecked()
+        ]
+
+    def remove_tasks(self, task_ids: list[int]) -> None:
+        for todo_id in task_ids:
+            row = self._task_rows.pop(int(todo_id), None)
+            if not row:
+                continue
+            self.tasks_layout.removeWidget(row["widget"])
+            row["widget"].deleteLater()
+        self._update_title()
+        self._adjust_size_and_position()
+        if not self._task_rows:
+            self.close()
+
+    def _emit_complete_requested(self) -> None:
+        selected_ids = self.selected_task_ids()
+        if selected_ids:
+            self.complete_requested.emit(selected_ids)
 
     def _apply_palette(self, palette: ThemeColors) -> None:
         self._palette = palette
@@ -134,6 +238,13 @@ class NotificationDialog(QDialog):
                 border-radius: 8px;
             }}
             QLabel {{ color: {palette.text_primary}; font-size: 11pt; }}
+            QWidget#notificationRow {{
+                background-color: {palette.secondary_background};
+                border: 1px solid {palette.card_border};
+                border-radius: 6px;
+            }}
+            QScrollArea {{ background-color: transparent; border: none; }}
+            QCheckBox {{ color: {palette.text_primary}; spacing: 8px; }}
             QPushButton {{
                 background-color: {palette.accent}; color: {palette.inverse_text}; border: none;
                 padding: 8px 12px; border-radius: 4px; font-size: 10pt;
@@ -166,30 +277,35 @@ class NotificationDialog(QDialog):
         self.title_label.setStyleSheet(
             f"font-size: 14pt; color: {palette.due_warning}; font-weight: bold;"
         )
-        if self.due_label is not None:
-            self.due_label.setStyleSheet(
-                f"font-size: 10pt; color: {palette.text_secondary};"
+        for row in self._task_rows.values():
+            row["detail_label"].setStyleSheet(
+                f"font-size: 9pt; color: {palette.text_secondary};"
+            )
+            status_color = palette.due_critical if row["is_due"] else palette.due_warning
+            row["status_label"].setStyleSheet(
+                f"font-size: 9pt; color: {status_color}; font-weight: bold;"
             )
 
     @Slot(ThemeColors)
     def _on_theme_changed(self, palette: ThemeColors) -> None:
         self._apply_palette(palette)
 
-    def _set_snooze_and_close(self, duration: timedelta) -> None:
-        self.snooze_duration = duration
-        self.done(QDialog.DialogCode.Accepted + 1)
+    def _emit_snooze_requested(self, duration: timedelta) -> None:
+        selected_ids = self.selected_task_ids()
+        if selected_ids:
+            self.snooze_requested.emit(selected_ids, duration)
 
     def snooze_default(self) -> None:
-        self._set_snooze_and_close(timedelta(minutes=15))
+        self._emit_snooze_requested(timedelta(minutes=15))
 
     def snooze_1_hour(self) -> None:
-        self._set_snooze_and_close(timedelta(hours=1))
+        self._emit_snooze_requested(timedelta(hours=1))
 
     def snooze_tomorrow_9am(self) -> None:
         now = datetime.now().astimezone()
         tomorrow_date = now.date() + timedelta(days=1)
         target_dt = datetime.combine(tomorrow_date, time(9, 0), tzinfo=now.tzinfo)
-        self._set_snooze_and_close(target_dt - now)
+        self._emit_snooze_requested(target_dt - now)
 
     def snooze_8pm(self) -> None:
         now = datetime.now().astimezone()
@@ -200,10 +316,7 @@ class NotificationDialog(QDialog):
                 time(20, 0),
                 tzinfo=now.tzinfo,
             )
-        self._set_snooze_and_close(target_dt - now)
-
-    def get_snooze_duration(self) -> Optional[timedelta]:
-        return self.snooze_duration
+        self._emit_snooze_requested(target_dt - now)
 
 
 class TaskEditDialog(QDialog):

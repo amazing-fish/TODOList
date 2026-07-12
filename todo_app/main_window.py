@@ -51,7 +51,7 @@ class ModernTodoAppWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.todos: List[Dict] = load_todos()
-        self.active_notifications: Dict[int, QDialog] = {}
+        self._notification_dialog: Optional[NotificationDialog] = None
         self.settings = QSettings("MyProductiveApp", APP_NAME)
         self._quitting_app = False
 
@@ -321,6 +321,7 @@ class ModernTodoAppWindow(QMainWindow):
     def tick_update(self) -> None:
         now_utc = datetime.now(timezone.utc)
         items_changed = False
+        notification_requests: list[tuple[dict, bool]] = []
         for i in range(self.list_widget.count()):
             list_item = self.list_widget.item(i)
             if not list_item:
@@ -363,39 +364,44 @@ class ModernTodoAppWindow(QMainWindow):
                 )
 
             item_widget.update_timer_display(now_utc)
-            self._check_for_notification(original_ref, now_utc)
+            notification_request = self._check_for_notification(original_ref, now_utc)
+            if notification_request:
+                notification_requests.append(notification_request)
+                items_changed = True
 
         if items_changed:
             save_todos(self.todos)
             self.update_list_widget()
+        if notification_requests:
+            self._show_notification_batch(notification_requests)
 
     # --- 通知逻辑 ---
-    def _check_for_notification(self, todo: dict, current_time_utc: datetime) -> None:
+    def _check_for_notification(
+        self, todo: dict, current_time_utc: datetime
+    ) -> Optional[tuple[dict, bool]]:
         if todo.get("completed"):
-            if todo["id"] in self.active_notifications:
-                self.active_notifications.pop(todo["id"]).close()
-            return
+            self._remove_notification_task(todo.get("id"))
+            return None
 
         due_date_str = todo.get("dueDate")
         if not due_date_str:
-            return
+            return None
 
         try:
             due_date_dt = datetime.fromisoformat(due_date_str.replace("Z", "+00:00"))
         except ValueError:
             print(f"错误: 任务ID {todo.get('id', '未知')} 截止日期格式无效: {due_date_str}")
-            return
+            return None
 
         snooze_until = todo.get("snoozeUntil")
         if snooze_until:
             try:
                 if datetime.fromisoformat(snooze_until.replace("Z", "+00:00")) > current_time_utc:
-                    return
+                    return None
             except ValueError:
                 pass
 
         reminder_offset_sec = todo.get("reminderOffset", 0)
-        notification_triggered = False
         if reminder_offset_sec >= 0:
             reminder_time_dt = due_date_dt - timedelta(seconds=reminder_offset_sec)
             if (
@@ -403,60 +409,86 @@ class ModernTodoAppWindow(QMainWindow):
                 and due_date_dt > current_time_utc
                 and not todo.get("notifiedForReminder", False)
             ):
-                self._show_notification_dialog(todo, is_due_notification=False)
                 todo["notifiedForReminder"] = True
                 todo["lastNotifiedAt"] = current_time_utc.isoformat()
-                notification_triggered = True
+                return todo, False
 
         if due_date_dt <= current_time_utc and not todo.get("notifiedForDue", False):
-            self._show_notification_dialog(todo, is_due_notification=True)
             todo["notifiedForDue"] = True
-            if not todo.get("notifiedForReminder"):
-                todo["notifiedForReminder"] = True
+            todo["notifiedForReminder"] = True
             todo["lastNotifiedAt"] = current_time_utc.isoformat()
-            notification_triggered = True
+            return todo, True
 
-        if notification_triggered:
-            save_todos(self.todos)
+        return None
 
-    def _show_notification_dialog(self, todo_item: dict, is_due_notification: bool) -> None:
-        if todo_item["id"] in self.active_notifications:
-            dialog = self.active_notifications[todo_item["id"]]
-            dialog.raise_()
-            dialog.activateWindow()
-            return
-
-        if is_due_notification:
+    def _show_notification_batch(self, requests: list[tuple[dict, bool]]) -> None:
+        if any(is_due for _, is_due in requests):
             play_sound_effect(self.due_sound, DUE_SOUND_PATH)
         else:
             play_sound_effect(self.reminder_sound, REMINDER_SOUND_PATH)
 
         self._ensure_window_visible_for_notification()
-        dialog = NotificationDialog(todo_item, self)
-        self.active_notifications[todo_item["id"]] = dialog
+        dialog = self._notification_dialog
+        if dialog is None:
+            dialog = NotificationDialog(requests, self)
+            self._notification_dialog = dialog
+            dialog.complete_requested.connect(self._handle_notification_complete)
+            dialog.snooze_requested.connect(self._handle_notification_snooze)
+            dialog.finished.connect(self._on_notification_dialog_finished)
+            dialog.show()
+        else:
+            dialog.add_or_update_tasks(requests)
         dialog.raise_()
         dialog.activateWindow()
-        result = dialog.exec()
-        self.active_notifications.pop(todo_item["id"], None)
 
-        current_ref = next((t for t in self.todos if t["id"] == todo_item["id"]), None)
-        if not current_ref:
-            print(f"警告: 通知对话框关闭后，任务ID {todo_item['id']} 未在主列表中找到。")
-            return
+    def _on_notification_dialog_finished(self, _result: int) -> None:
+        self._notification_dialog = None
 
-        item_changed = False
-        if result == QDialog.DialogCode.Accepted:
-            self.toggle_complete_todo(todo_item["id"], called_from_notification=True)
-            item_changed = True
-        elif result == QDialog.DialogCode.Accepted + 1:
-            snooze_duration = dialog.get_snooze_duration()
-            if snooze_duration:
-                current_ref.update(build_snooze_update_fields(current_ref, snooze_duration))
-                item_changed = True
+    def _handle_notification_complete(self, todo_ids: list[int]) -> None:
+        requested_ids = {int(todo_id) for todo_id in todo_ids}
+        changed = False
+        for todo in self.todos:
+            if todo.get("id") not in requested_ids or todo.get("completed", False):
+                continue
+            todo.update(
+                {
+                    "completed": True,
+                    "snoozeUntil": None,
+                    "notifiedForReminder": True,
+                    "notifiedForDue": True,
+                }
+            )
+            changed = True
 
-        if item_changed:
+        self._remove_notification_tasks(list(requested_ids))
+        if changed:
             save_todos(self.todos)
             self.update_list_widget()
+
+    def _handle_notification_snooze(
+        self, todo_ids: list[int], snooze_duration: timedelta
+    ) -> None:
+        requested_ids = {int(todo_id) for todo_id in todo_ids}
+        changed = False
+        for todo in self.todos:
+            if todo.get("id") not in requested_ids or todo.get("completed", False):
+                continue
+            todo.update(build_snooze_update_fields(todo, snooze_duration))
+            changed = True
+
+        self._remove_notification_tasks(list(requested_ids))
+        if changed:
+            save_todos(self.todos)
+            self.update_list_widget()
+
+    def _remove_notification_tasks(self, todo_ids: list[int]) -> None:
+        if self._notification_dialog is not None:
+            self._notification_dialog.remove_tasks(todo_ids)
+
+    def _remove_notification_task(self, todo_id: object) -> None:
+        normalized_id = self._normalize_todo_id(todo_id)
+        if normalized_id is not None:
+            self._remove_notification_tasks([normalized_id])
 
     def _ensure_window_visible_for_notification(self) -> None:
         if self._quitting_app:
@@ -598,8 +630,7 @@ class ModernTodoAppWindow(QMainWindow):
             for index, todo in enumerate(self.todos):
                 if todo["id"] == normalized_id:
                     self.todos[index].update(build_edit_update_fields(todo, updated_data))
-                    if normalized_id in self.active_notifications:
-                        self.active_notifications.pop(normalized_id).close()
+                    self._remove_notification_task(normalized_id)
                     break
 
             save_todos(self.todos)
@@ -628,8 +659,7 @@ class ModernTodoAppWindow(QMainWindow):
             )
             == QMessageBox.StandardButton.Yes
         ):
-            if normalized_id in self.active_notifications:
-                self.active_notifications.pop(normalized_id).close()
+            self._remove_notification_task(normalized_id)
             original_len = len(self.todos)
             self.todos = [t for t in self.todos if t.get("id") != normalized_id]
             if len(self.todos) < original_len:
@@ -661,8 +691,7 @@ class ModernTodoAppWindow(QMainWindow):
                             "notifiedForDue": True,
                         }
                     )
-                    if normalized_id in self.active_notifications:
-                        self.active_notifications.pop(normalized_id).close()
+                    self._remove_notification_task(normalized_id)
                 else:
                     self.todos[index].update(
                         {
@@ -948,10 +977,9 @@ class ModernTodoAppWindow(QMainWindow):
 
     # --- 关闭流程 ---
     def closeEvent(self, event: QEvent) -> None:  # noqa: N802
-        for dialog_id in list(self.active_notifications.keys()):
-            dialog = self.active_notifications.pop(dialog_id)
-            dialog.reject()
-            dialog.deleteLater()
+        if self._notification_dialog is not None:
+            self._notification_dialog.close()
+            self._notification_dialog = None
 
         self.save_geometry_and_state()
 
