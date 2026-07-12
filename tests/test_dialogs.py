@@ -8,7 +8,8 @@ from datetime import datetime, timezone
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtCore import QDate, QDateTime, QTime  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDateEdit, QTimeEdit  # noqa: E402
 
 from todo_app.dialogs import TaskEditDialog  # noqa: E402
 from todo_app.scheduling import build_edit_update_fields  # noqa: E402
@@ -36,6 +37,7 @@ class TaskEditDialogTest(unittest.TestCase):
         edited = dialog.get_task_data()
         updated = build_edit_update_fields(existing, edited)
 
+        self.assertEqual(edited["dueDate"], existing["dueDate"])
         original_instant = datetime.fromisoformat(existing["dueDate"]).astimezone(timezone.utc)
         edited_instant = datetime.fromisoformat(edited["dueDate"]).astimezone(timezone.utc)
         self.assertLess(abs((edited_instant - original_instant).total_seconds()), 0.001)
@@ -45,6 +47,50 @@ class TaskEditDialogTest(unittest.TestCase):
         self.assertNotIn("notifiedForDue", updated)
         self.assertNotIn("lastNotifiedAt", updated)
         dialog.close()
+
+    def test_editing_visible_minute_clears_hidden_seconds(self) -> None:
+        existing = {
+            "text": "延后后的任务",
+            "priority": "中",
+            "dueDate": "2026-07-12T03:28:39.634000+08:00",
+            "reminderOffset": 0,
+        }
+        dialog = TaskEditDialog(todo_item=existing)
+        self.addCleanup(dialog.close)
+
+        dialog.time_edit.setTime(dialog.time_edit.time().addSecs(60))
+
+        edited_due = datetime.fromisoformat(dialog.get_task_data()["dueDate"])
+        self.assertEqual(edited_due.second, 0)
+        self.assertEqual(edited_due.microsecond, 0)
+
+    def test_due_controls_keep_wheel_time_and_inline_calendar(self) -> None:
+        dialog = TaskEditDialog()
+        self.addCleanup(dialog.close)
+
+        self.assertIsInstance(dialog.time_edit, QTimeEdit)
+        self.assertEqual(dialog.time_edit.displayFormat(), "HH:mm")
+        self.assertIsInstance(dialog.date_edit, QDateEdit)
+        self.assertEqual(dialog.date_edit.displayFormat(), "yyyy-MM-dd")
+        self.assertTrue(dialog.date_edit.calendarPopup())
+
+    def test_due_controls_combine_date_and_time_or_clear_due_date(self) -> None:
+        dialog = TaskEditDialog()
+        self.addCleanup(dialog.close)
+        dialog.task_input.setPlainText("跨日期任务")
+        dialog.set_due_date_button.setChecked(True)
+        dialog.date_edit.setDate(QDate(2026, 7, 13))
+        dialog.time_edit.setTime(QTime(9, 30))
+
+        data = dialog.get_task_data()
+
+        expected = QDateTime(QDate(2026, 7, 13), QTime(9, 30)).toUTC().toPython()
+        if expected.tzinfo is None:
+            expected = expected.replace(tzinfo=timezone.utc)
+        self.assertEqual(data["dueDate"], expected.isoformat())
+
+        dialog.set_due_date_button.setChecked(False)
+        self.assertIsNone(dialog.get_task_data()["dueDate"])
 
 
 if __name__ == "__main__":
