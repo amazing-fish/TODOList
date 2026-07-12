@@ -49,8 +49,8 @@ Expected: FAIL because `_default_due_datetime` does not exist.
 ```python
 def _default_due_datetime(now_qdt: QDateTime) -> QDateTime:
     target = now_qdt.addSecs(3600)
-    target.setTime(QTime(target.time().hour(), target.time().minute()))
-    return target
+    hidden_msecs = target.time().second() * 1000 + target.time().msec()
+    return target.addMSecs(-hidden_msecs)
 ```
 
 新增对话框中：
@@ -63,6 +63,8 @@ self.time_edit.setTime(default_due.time())
 
 删除凌晨改为 09:00 和日期强制设为今天的旧逻辑。
 
+新增对话框还需保存该目标的 UTC ISO 值；当用户未修改可见日期和分钟时直接返回该值，以保留 DST 重复小时对应的 offset。
+
 **Step 4: Run test to verify it passes**
 
 Run targeted test, then:
@@ -71,7 +73,7 @@ Run targeted test, then:
 & 'D:\Develop\Tool\Miniconda\envs\try\python.exe' -m unittest discover -s tests -v
 ```
 
-Expected: targeted test and full suite pass.
+Expected: targeted test and full suite pass。另增加 DST 重复小时与对话框接线测试，确认目标始终是未来时刻且最终序列化值未丢失 offset。
 
 ### Task 2: 同步版本和交互文档
 
