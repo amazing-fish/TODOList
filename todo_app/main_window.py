@@ -78,7 +78,6 @@ class ModernTodoAppWindow(QMainWindow):
         self.master_timer.start(1000)
         self.restore_geometry_and_state()
 
-        self._last_minimize_to_tray_notified = False
         self._on_top_restore_timer = QTimer(self)
         self._on_top_restore_timer.setSingleShot(True)
         self._on_top_restore_timer.timeout.connect(self._restore_window_stays_on_top_flag)
@@ -511,7 +510,6 @@ class ModernTodoAppWindow(QMainWindow):
             self.show()
 
         self._force_window_foreground()
-        self._last_minimize_to_tray_notified = False
 
     def _force_window_foreground(self) -> None:
         self.raise_()
@@ -860,7 +858,6 @@ class ModernTodoAppWindow(QMainWindow):
             self.showNormal()
         self.raise_()
         self.activateWindow()
-        self._last_minimize_to_tray_notified = False
         self.show_add_task_dialog()
 
     def changeEvent(self, event: QEvent) -> None:  # noqa: N802
@@ -884,15 +881,6 @@ class ModernTodoAppWindow(QMainWindow):
             return
         self._hide_notification_dialog()
         self.hide()
-        tray_icon = getattr(self, "tray_icon", None)
-        if not self._last_minimize_to_tray_notified and tray_icon and tray_icon.isVisible():
-            tray_icon.showMessage(
-                APP_NAME,
-                "应用已最小化到系统托盘。",
-                QSystemTrayIcon.MessageIcon.Information,
-                2000,
-            )
-            self._last_minimize_to_tray_notified = True
 
     def _on_tray_icon_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
@@ -907,8 +895,6 @@ class ModernTodoAppWindow(QMainWindow):
             self.raise_()
             self.activateWindow()
             self._restore_notification_dialog()
-        if self.isVisible():
-            self._last_minimize_to_tray_notified = False
 
     # --- 状态保存 ---
     def save_geometry_and_state(self) -> None:
@@ -994,13 +980,6 @@ class ModernTodoAppWindow(QMainWindow):
             self._hide_notification_dialog()
             self.hide()
             event.ignore()
-            tray_icon.showMessage(
-                APP_NAME,
-                "应用已最小化到系统托盘。",
-                QSystemTrayIcon.MessageIcon.Information,
-                2000,
-            )
-            self._last_minimize_to_tray_notified = True
         else:
             self._close_notification_dialog()
             if not self._quitting_app:
