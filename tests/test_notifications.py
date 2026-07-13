@@ -282,9 +282,25 @@ class NotificationBatchIntegrationTest(unittest.TestCase):
             self.assertFalse(event.isAccepted())
             self.assertIs(window._notification_dialog, dialog)
             self.assertFalse(dialog.closed)
+            window.tray_icon.showMessage.assert_not_called()
 
             window.toggle_window_visibility()
             self.assertEqual(dialog.show_count, 1)
+
+    def test_minimize_to_tray_does_not_show_system_message(self) -> None:
+        with (
+            patch("todo_app.main_window.load_todos", return_value=[]),
+            patch("todo_app.main_window.save_todos"),
+        ):
+            window = ModernTodoAppWindow()
+            window.master_timer.stop()
+            self.addCleanup(self._close_window, window)
+            window.tray_icon.showMessage = MagicMock()
+
+            window._minimize_to_tray()
+
+            self.assertTrue(window.isHidden())
+            window.tray_icon.showMessage.assert_not_called()
 
     def test_tray_menu_hides_and_restores_notification_batch(self) -> None:
         task = make_todo(1, "随主窗口隐藏")
