@@ -11,10 +11,6 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: build-exe-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   build:
     runs-on: windows-latest
@@ -80,8 +76,24 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: 更新主分支预发布标签
+      - name: 确认主分支预发布资格
+        id: main_preview
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        run: |
+          $remoteLine = git ls-remote --exit-code origin refs/heads/main
+          if ($LASTEXITCODE -ne 0 -or -not $remoteLine) {
+            throw "无法读取远端 main 分支提交"
+          }
+          $latestMainSha = ($remoteLine -split '\s+')[0]
+          $shouldPublish = $latestMainSha -eq $env:GITHUB_SHA
+          "should_publish=$($shouldPublish.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          if (-not $shouldPublish) {
+            Write-Host "跳过过期 main 构建的预发布：当前 main 为 $latestMainSha，本次构建为 $env:GITHUB_SHA"
+          }
+
+      - name: 更新主分支预发布标签
+        if: steps.main_preview.outputs.should_publish == 'true'
         shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
@@ -90,7 +102,7 @@ jobs:
           git push origin refs/tags/pre-main --force
 
       - name: 创建或更新主分支预发布
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: steps.main_preview.outputs.should_publish == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: pre-main
