@@ -85,6 +85,15 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or -not $remoteLine) {
             throw "无法读取远端 main 分支提交"
           }
+          $versionContent = Get-Content -LiteralPath "todo_app/constants.py" -Raw
+          if ($versionContent -notmatch 'APP_VERSION\s*=\s*"(?<version>\d+\.\d+\.\d+)"') {
+            throw "无法从 todo_app/constants.py 解析 APP_VERSION"
+          }
+          $appVersion = $Matches.version
+          $releaseTag = "pre$appVersion"
+          "app_version=$appVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "release_tag=$releaseTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
           $latestMainSha = ($remoteLine -split '\s+')[0]
           $shouldPublish = $latestMainSha -eq $env:GITHUB_SHA
           "should_publish=$($shouldPublish.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
@@ -98,16 +107,17 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -f pre-main $env:GITHUB_SHA
-          git push origin refs/tags/pre-main --force
+          $releaseTag = "${{ steps.main_preview.outputs.release_tag }}"
+          git tag -f $releaseTag $env:GITHUB_SHA
+          git push origin "refs/tags/$releaseTag" --force
 
       - name: 创建或更新主分支预发布
         if: steps.main_preview.outputs.should_publish == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: pre-main
+          tag_name: ${{ steps.main_preview.outputs.release_tag }}
           target_commitish: ${{ github.sha }}
-          name: TODOList Main Preview
+          name: TODOList Preview ${{ steps.main_preview.outputs.app_version }}
           prerelease: true
           make_latest: false
           files: dist/TODOList.exe
