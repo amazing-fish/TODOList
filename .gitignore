@@ -1,7 +1,25 @@
+# Python 缓存
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 应用运行时数据
+todos.json
+
+# PyInstaller 构建产物
 *.spec
 build/
 dist/
-.DS_Store
+
+# 编辑器与操作系统文件
 .idea/
+.vscode/
+.DS_Store
+Thumbs.db
