@@ -19,22 +19,6 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 解析发布版本
-        id: release_version
-        shell: pwsh
-        run: |
-          if ("${{ github.ref }}" -like "refs/tags/*") {
-            $tag = "${{ github.ref_name }}"
-          } else {
-            $content = Get-Content -LiteralPath "todo_app/constants.py" -Raw
-            if ($content -notmatch 'APP_VERSION\s*=\s*"(?<version>\d+\.\d+\.\d+)"') {
-              throw "无法从 todo_app/constants.py 解析 APP_VERSION"
-            }
-            $tag = "v$($Matches.version)"
-          }
-          "release_tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
       - name: 设置 Python
         uses: actions/setup-python@v5
         with:
@@ -70,27 +54,33 @@ jobs:
             --hidden-import PySide6.QtSvg `
             --hidden-import PySide6.QtMultimedia
 
+      - name: 生成构建产物名称
+        id: artifact
+        shell: pwsh
+        run: |
+          $shortSha = "${{ github.sha }}".Substring(0, 7)
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $source = "manual"
+          } elseif ("${{ github.ref }}" -like "refs/tags/v*") {
+            $source = "${{ github.ref_name }}"
+          } else {
+            $source = "main"
+          }
+          "name=TODOList-$source-$shortSha" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: TODOList-windows
+          name: ${{ steps.artifact.outputs.name }}
           path: dist/TODOList.exe
           if-no-files-found: error
-
-      - name: 同步发布标签
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        shell: pwsh
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -f $env:RELEASE_TAG $env:GITHUB_SHA
-          git push origin "refs/tags/$env:RELEASE_TAG" --force
+          retention-days: 7
 
       - name: 创建或更新发布
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release_version.outputs.release_tag }}
+          tag_name: ${{ github.ref_name }}
           target_commitish: ${{ github.sha }}
           files: dist/TODOList.exe
           overwrite_files: true
