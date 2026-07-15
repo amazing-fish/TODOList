@@ -29,13 +29,13 @@
 ### 验证
 
 1. 优先运行与改动直接相关的测试，便于快速定位问题。
-2. 提交前运行完整自动化测试：
+2. 修改 Python 源码或用户行为时，提交前运行完整自动化测试：
 
    ```powershell
    python -m unittest discover -s tests -v
    ```
 
-3. 运行语法编译检查：
+3. 修改 Python 源码时运行语法编译检查：
 
    ```powershell
    python -m compileall todo_app
