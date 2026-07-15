@@ -6,7 +6,7 @@
 ## 项目速览
 - **定位**：基于 PySide6 的桌面待办事项管理工具，强调现代化视觉、提醒/延迟机制与轻量本地存储。
 - **入口**：`main.py` 调用 `todo_app.run()`，由 `ModernTodoAppWindow`（`todo_app/main_window.py`）驱动 UI 与业务流。
-- **运行**：开发环境可执行 `python main.py`；GitHub Actions 工作流 `build-exe.yml` 负责生成 Windows 平台单文件可执行程序，在推送到 `main` 分支时按 `APP_VERSION` 同步对应标签并创建或更新 Release，在推送 `v*` 标签时使用当前标签发布；手动触发仅上传构建产物。
+- **运行**：开发环境可执行 `python main.py`；GitHub Actions 工作流 `build-exe.yml` 在手动触发、推送到 `main` 或推送 `v*` 标签时生成 Windows 单文件可执行程序并上传保留 7 天的临时 Artifact。`main` 推送还会移动专用可变标签 `pre-main` 并更新不作为 Latest 的 Pre-release；手动构建不修改标签或 Release；只有显式推送且不可移动的 `v*` 标签才创建或更新正式 Release。
 - **依赖要点**：PySide6 GUI 组件、`QSoundEffect` 播放提醒、`todos.json` 做本地数据缓存。
 
 ## 技术路径
@@ -69,6 +69,7 @@
 - 若确认无变更，提交说明需写明“锚点已复盘，无需更新”。
 
 ## 最近约定变更
+- 2026-07-15：refactor，Windows 打包流程区分主分支 Pre-release、正式 Release 与临时 Artifact；`main` 更新专用可变标签 `pre-main` 及预发布，手动构建只上传保留 7 天的 Artifact，显式推送且不可移动的 `v*` 标签用于正式发布（不触发版本号）。
 - 2026-07-13：bugfix，移除最小化及关闭到托盘时的系统气泡提示，保留静默托盘行为与软件内任务提醒，版本更新至 `v1.7.13`。
 - 2026-07-12：bugfix，多个任务的提醒改为单一非模态软件内汇总窗口，支持选择后批量完成或推迟并移除模态弹窗叠加，不增加系统任务通知，版本更新至 `v1.7.12`。
 - 2026-07-12：bugfix，新增任务默认截止时间统一为当前时间一小时后，移除凌晨改为 09:00 与日期固定为当天的分支，版本更新至 `v1.7.11`。
