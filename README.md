@@ -55,7 +55,9 @@
 
 ## 打包与发布
 
-- 仓库提供的 GitHub Actions 工作流 `.github/workflows/build-exe.yml` 会在手动触发、推送到 `main` 分支或推送 `v*` 标签时使用 PyInstaller 打包 Windows 平台的单文件可执行程序，构建结果会作为工作流附件保存；推送到 `main` 时会读取 `todo_app/constants.py` 中的 `APP_VERSION`，先同步对应 `v*` 标签到当前提交，再创建或更新该 Release，标签触发时则使用当前标签发布；手动触发仅用于打包验证，不会改动标签或 Release。
+- GitHub Actions 工作流 `.github/workflows/build-exe.yml` 会在手动触发、推送到 `main` 分支或推送 `v*` 标签时，使用 PyInstaller 打包 Windows 单文件可执行程序。
+- `main` 推送和手动运行仅上传临时 Actions Artifact，不创建或更新 Release，也不创建或移动标签。Artifact 名称会标明 `main`、`manual` 或标签来源并包含短提交 SHA，统一保留 7 天。
+- 只有推送 `v*` 标签才会创建或更新对应的正式 Release，并上传 `TODOList.exe` 作为长期下载入口。发布直接使用已推送标签及其固定提交；同一标签的工作流重跑允许覆盖该标签的同名资产以恢复失败发布，但不会移动标签或影响其他版本。
 - 若需本地验证，可执行：
   ```bash
   pyinstaller main.py --name TODOList --noconsole --clean -onefile --add-data "assets;assets" --hidden-import PySide6.QtSvg --hidden-import PySide6.QtMultimedia
