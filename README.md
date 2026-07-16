@@ -56,7 +56,7 @@
 ## 打包与发布
 
 - GitHub Actions 工作流 `.github/workflows/build-exe.yml` 会在手动触发、推送到 `main` 分支或推送 `v*` 标签时，使用 PyInstaller 打包 Windows 单文件可执行程序；所有构建都会上传名称含来源与短提交 SHA、保留 7 天的临时 Actions Artifact。
-- 推送到 `main` 时还会将专用可变标签 `pre-main` 更新到当前提交，并创建或更新标记为 Pre-release、不会成为 Latest Release 的 `TODOList Main Preview`，其中包含 `TODOList.exe`。只有该 `pre*` 预发布标签允许移动。
+- 推送到 `main` 时会读取 `todo_app/constants.py` 中的 `APP_VERSION`，将 `pre` 与版本号组合成预发布标签（例如 `1.7.14` 对应 `pre1.7.14`），并创建或更新不会成为 Latest Release 的 Pre-release，其中包含 `TODOList.exe`。同一版本号下，该 `pre<版本号>` 标签可随新的 `main` 提交更新。
 - 手动运行仅上传临时 Artifact，不创建或更新任何 Release，也不修改标签；即使手动选择标签 ref，仍保持临时构建语义。
 - 推送 `v*` 标签才会创建或更新对应的正式 Release，并上传 `TODOList.exe` 作为长期正式下载入口。所有 `v*` 版本标签均由发布者显式推送且保持不可变；同一标签的工作流重跑允许覆盖该标签的同名资产以恢复失败发布。
 - 若需本地验证，可执行：
