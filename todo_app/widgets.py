@@ -84,6 +84,7 @@ class TodoItemWidget(QFrame):
         main_layout.addWidget(self.timer_display_label)
 
         self.actions_container = QWidget()
+        self.actions_container.setObjectName("TodoActionsContainer")
         actions_layout = QVBoxLayout(self.actions_container)
         actions_layout.setContentsMargins(0, 0, 0, 0)
         actions_layout.setSpacing(5)
@@ -102,9 +103,10 @@ class TodoItemWidget(QFrame):
         actions_layout.addWidget(self.delete_button)
         actions_layout.addStretch()
 
-        self.actions_container.setMinimumWidth(35)
+        self.actions_container.setFixedWidth(35)
         main_layout.addWidget(self.actions_container)
-        self.actions_container.setVisible(False)
+        self.edit_button.setVisible(False)
+        self.delete_button.setVisible(False)
 
         self.update_timer_display(datetime.now(timezone.utc))
         self.update_text_display()
@@ -140,6 +142,7 @@ class TodoItemWidget(QFrame):
                 border-radius: 6px; padding: 12px; margin-bottom: 8px;
             }}
             QLabel {{ background-color: transparent; }}
+            QWidget#TodoActionsContainer {{ background-color: transparent; }}
             QPushButton {{ background-color: transparent; border: none; padding: 4px; }}
             QPushButton:hover {{ background-color: {self._palette.action_hover_bg}; border-radius: 3px; }}
             """
@@ -159,33 +162,27 @@ class TodoItemWidget(QFrame):
         ).format(text=text_color, bg=background, content=priority)
 
     def enterEvent(self, event: QEvent) -> None:  # noqa: N802
-        self.actions_container.setVisible(True)
+        self.edit_button.setVisible(True)
+        self.delete_button.setVisible(True)
         super().enterEvent(event)
-        self.update_text_display()
 
     def leaveEvent(self, event: QEvent) -> None:  # noqa: N802
-        self.actions_container.setVisible(False)
+        self.edit_button.setVisible(False)
+        self.delete_button.setVisible(False)
         super().leaveEvent(event)
-        self.update_text_display()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self.update_text_display()
 
     def update_text_display(self) -> None:
-        total_width = self.width()
-        if total_width <= 0:
+        layout = self.layout()
+        if layout is not None:
+            layout.activate()
+
+        available_width = self.task_text_label.contentsRect().width()
+        if available_width <= 0:
             return
-
-        margins = 24
-        button_width = self.complete_button.width() or 28
-        timer_width = self.timer_display_label.minimumWidth()
-        actions_width = self.actions_container.width() if self.actions_container.isVisible() else 0
-        spacing = 30
-
-        available_width = total_width - margins - button_width - timer_width - actions_width - spacing
-        if available_width < 50:
-            available_width = 50
 
         font = self.task_text_label.font()
         truncated_text = truncate_text_for_width(self.original_text, font, available_width, min_chars=6)

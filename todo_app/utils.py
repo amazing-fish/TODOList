@@ -82,7 +82,7 @@ def play_sound_effect(
 
 
 def truncate_text_for_width(text: str, font: QFont, max_width: int, min_chars: int = 6) -> str:
-    """根据宽度截断文本，确保至少展示 min_chars 个字符。"""
+    """根据宽度截断文本，在空间允许时尽量展示至少 ``min_chars`` 个字符。"""
     if not text:
         return text
 
@@ -91,20 +91,21 @@ def truncate_text_for_width(text: str, font: QFont, max_width: int, min_chars: i
     if font_metrics.horizontalAdvance(text) <= max_width:
         return text
 
-    if len(text) <= min_chars:
-        return text
-
     ellipsis = "…"
     ellipsis_width = font_metrics.horizontalAdvance(ellipsis)
     available_width = max_width - ellipsis_width
+    if available_width < 0:
+        return ""
 
-    min_text = text[:min_chars]
-    min_width = font_metrics.horizontalAdvance(min_text)
-    if available_width < min_width:
-        return min_text + ellipsis
+    preferred_min_length = min(min_chars, len(text))
+    while preferred_min_length > 0:
+        min_text = text[:preferred_min_length]
+        if font_metrics.horizontalAdvance(min_text) <= available_width:
+            break
+        preferred_min_length -= 1
 
-    left, right = min_chars, len(text)
-    best_length = min_chars
+    left, right = preferred_min_length, len(text)
+    best_length = preferred_min_length
 
     while left <= right:
         mid = (left + right) // 2
