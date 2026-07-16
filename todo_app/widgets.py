@@ -176,6 +176,10 @@ class TodoItemWidget(QFrame):
         self.update_text_display()
 
     def update_text_display(self) -> None:
+        layout = self.layout()
+        if layout is not None:
+            layout.activate()
+
         available_width = self.task_text_label.contentsRect().width()
         if available_width <= 0:
             return

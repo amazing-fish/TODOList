@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from datetime import datetime, timedelta, timezone
 
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -72,6 +73,40 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
 
         self.assertLessEqual(metrics.horizontalAdvance(displayed), max_width)
         self.assertNotEqual(displayed, "六个字符宽度")
+
+    def test_timer_text_growth_reelides_task_after_layout_change(self) -> None:
+        now = datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc)
+        host = QWidget()
+        host_layout = QVBoxLayout(host)
+        widget = TodoItemWidget(
+            {
+                "id": 1,
+                "text": "这是一段很长的任务文字",
+                "priority": "中",
+                "completed": False,
+                "dueDate": (now + timedelta(seconds=1)).isoformat(),
+            }
+        )
+        widget.setFixedSize(320, 110)
+        host_layout.addWidget(widget)
+        host.setFixedSize(342, 132)
+        host.show()
+        self.addCleanup(host.close)
+
+        widget.update_timer_display(now)
+        self.app.processEvents()
+        self.assertEqual(widget.timer_display_label.text(), "剩余: 1秒")
+
+        widget.update_timer_display(now + timedelta(days=100_000))
+        task_width_when_update_returns = widget.task_text_label.contentsRect().width()
+        self.app.processEvents()
+
+        self.assertTrue(widget.timer_display_label.text().startswith("已到期"))
+        self.assertEqual(
+            task_width_when_update_returns,
+            widget.task_text_label.contentsRect().width(),
+        )
+        self._assert_displayed_text_fits(widget)
 
     def _assert_displayed_text_fits(self, widget: TodoItemWidget) -> None:
         metrics = QFontMetrics(widget.task_text_label.font())
