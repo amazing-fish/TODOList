@@ -4,14 +4,21 @@ from __future__ import annotations
 import os
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, QPointF  # noqa: E402
 from PySide6.QtGui import QEnterEvent, QFont, QFontMetrics  # noqa: E402
-from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QAbstractItemView,
+    QApplication,
+    QVBoxLayout,
+    QWidget,
+)
 
+from todo_app.main_window import ModernTodoAppWindow  # noqa: E402
 from todo_app.widgets import TodoItemWidget  # noqa: E402
 from todo_app.utils import truncate_text_for_width  # noqa: E402
 
@@ -114,6 +121,96 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
             metrics.horizontalAdvance(widget.task_text_label.text()),
             widget.task_text_label.contentsRect().width(),
         )
+
+
+class TodoListCardIntegrationTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_default_width_card_uses_viewport_and_hover_actions_overlay_timer(self) -> None:
+        window = self._create_window()
+        window.resize(320, 640)
+        window.show()
+        self.app.processEvents()
+
+        item = window.list_widget.item(0)
+        card = window.list_widget.itemWidget(item)
+        viewport = window.list_widget.viewport()
+
+        self.assertLessEqual(card.width(), viewport.width())
+        self.assertLessEqual(
+            window.list_widget.visualItemRect(item).right(),
+            viewport.rect().right(),
+        )
+        self.assertEqual(card.task_text_label.minimumWidth(), 150)
+        self.assertGreaterEqual(card.task_text_label.width(), 150)
+        self.assertEqual(card.timer_display_label.minimumWidth(), 50)
+        self.assertGreaterEqual(card.timer_display_label.width(), 50)
+
+        idle_task_geometry = card.task_text_label.geometry()
+        idle_timer_geometry = card.timer_display_label.geometry()
+        card.enterEvent(
+            QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1))
+        )
+        self.app.processEvents()
+
+        self.assertFalse(card.edit_button.visibleRegion().isEmpty())
+        self.assertFalse(card.delete_button.visibleRegion().isEmpty())
+        self.assertIs(
+            card.childAt(
+                card.edit_button.mapTo(card, card.edit_button.rect().center())
+            ),
+            card.edit_button,
+        )
+        self.assertIs(
+            card.childAt(
+                card.delete_button.mapTo(card, card.delete_button.rect().center())
+            ),
+            card.delete_button,
+        )
+        self.assertTrue(
+            card.actions_container.geometry().intersects(
+                card.timer_display_label.geometry()
+            )
+        )
+        self.assertEqual(card.task_text_label.geometry(), idle_task_geometry)
+        self.assertEqual(card.timer_display_label.geometry(), idle_timer_geometry)
+
+    def test_todo_list_disables_item_selection_frame(self) -> None:
+        window = self._create_window()
+
+        self.assertEqual(
+            window.list_widget.selectionMode(),
+            QAbstractItemView.SelectionMode.NoSelection,
+        )
+
+    def _create_window(self) -> ModernTodoAppWindow:
+        todo = {
+            "id": 1,
+            "text": "这是一段很长很长的任务文字，用于检查窄窗口下的显示效果",
+            "priority": "中",
+            "completed": False,
+            "dueDate": (
+                datetime.now(timezone.utc) + timedelta(days=123)
+            ).isoformat(),
+            "createdAt": "2026-07-17T00:00:00+00:00",
+            "snoozeUntil": None,
+        }
+        load_patcher = patch("todo_app.main_window.load_todos", return_value=[todo])
+        load_patcher.start()
+        self.addCleanup(load_patcher.stop)
+        window = ModernTodoAppWindow()
+        window.master_timer.stop()
+        self.addCleanup(self._close_window, window)
+        return window
+
+    @staticmethod
+    def _close_window(window: ModernTodoAppWindow) -> None:
+        window.master_timer.stop()
+        window._quitting_app = True
+        window.tray_icon.hide()
+        window.close()
 
 
 if __name__ == "__main__":

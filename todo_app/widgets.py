@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -47,6 +48,7 @@ class TodoItemWidget(QFrame):
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setFrameShadow(QFrame.Shadow.Raised)
         self.setObjectName("TodoItemWidget")
+        self.setMinimumHeight(92)
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -63,10 +65,22 @@ class TodoItemWidget(QFrame):
         self.complete_button.clicked.connect(self._toggle_complete)
         main_layout.addWidget(self.complete_button)
 
-        content_layout = QVBoxLayout()
+        self.content_container = QWidget()
+        self.content_container.setMinimumWidth(150)
+        self.content_container.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+        content_layout = QVBoxLayout(self.content_container)
+        content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(4)
         self.task_text_label = QLabel(self.original_text)
         self.task_text_label.setWordWrap(False)
+        self.task_text_label.setMinimumWidth(150)
+        self.task_text_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
         font = QFont("Segoe UI", 11)
         font.setBold(not self.todo_item.get("completed", False))
         self.task_text_label.setFont(font)
@@ -76,14 +90,18 @@ class TodoItemWidget(QFrame):
         self.priority_label.setTextFormat(Qt.TextFormat.RichText)
         content_layout.addWidget(self.task_text_label)
         content_layout.addWidget(self.priority_label)
-        main_layout.addLayout(content_layout, 1)
+        main_layout.addWidget(self.content_container, 1)
 
         self.timer_display_label = QLabel("无计时")
-        self.timer_display_label.setMinimumWidth(80)
+        self.timer_display_label.setMinimumWidth(50)
+        self.timer_display_label.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Preferred,
+        )
         self.timer_display_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         main_layout.addWidget(self.timer_display_label)
 
-        self.actions_container = QWidget()
+        self.actions_container = QWidget(self)
         self.actions_container.setObjectName("TodoActionsContainer")
         actions_layout = QVBoxLayout(self.actions_container)
         actions_layout.setContentsMargins(0, 0, 0, 0)
@@ -104,9 +122,7 @@ class TodoItemWidget(QFrame):
         actions_layout.addStretch()
 
         self.actions_container.setFixedWidth(35)
-        main_layout.addWidget(self.actions_container)
-        self.edit_button.setVisible(False)
-        self.delete_button.setVisible(False)
+        self.actions_container.hide()
 
         self.update_timer_display(datetime.now(timezone.utc))
         self.update_text_display()
@@ -142,7 +158,7 @@ class TodoItemWidget(QFrame):
                 border-radius: 6px; padding: 12px; margin-bottom: 8px;
             }}
             QLabel {{ background-color: transparent; }}
-            QWidget#TodoActionsContainer {{ background-color: transparent; }}
+            QWidget#TodoActionsContainer {{ background-color: {bg_color}; border-radius: 3px; }}
             QPushButton {{ background-color: transparent; border: none; padding: 4px; }}
             QPushButton:hover {{ background-color: {self._palette.action_hover_bg}; border-radius: 3px; }}
             """
@@ -162,23 +178,38 @@ class TodoItemWidget(QFrame):
         ).format(text=text_color, bg=background, content=priority)
 
     def enterEvent(self, event: QEvent) -> None:  # noqa: N802
-        self.edit_button.setVisible(True)
-        self.delete_button.setVisible(True)
+        self._position_actions_overlay()
+        self.actions_container.show()
+        self.actions_container.raise_()
         super().enterEvent(event)
 
     def leaveEvent(self, event: QEvent) -> None:  # noqa: N802
-        self.edit_button.setVisible(False)
-        self.delete_button.setVisible(False)
+        self.actions_container.hide()
         super().leaveEvent(event)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
+        self._position_actions_overlay()
         self.update_text_display()
+
+    def _position_actions_overlay(self) -> None:
+        content_rect = self.contentsRect()
+        overlay_width = min(self.actions_container.width(), content_rect.width())
+        self.actions_container.setGeometry(
+            content_rect.right() - overlay_width + 1,
+            content_rect.top(),
+            overlay_width,
+            content_rect.height(),
+        )
+        self.actions_container.raise_()
 
     def update_text_display(self) -> None:
         layout = self.layout()
         if layout is not None:
             layout.activate()
+        content_layout = self.content_container.layout()
+        if content_layout is not None:
+            content_layout.activate()
 
         available_width = self.task_text_label.contentsRect().width()
         if available_width <= 0:

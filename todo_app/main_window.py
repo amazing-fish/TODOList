@@ -10,6 +10,7 @@ from textwrap import dedent
 from PySide6.QtCore import QByteArray, QEvent, QSettings, QTimer, Qt, QSize, Slot
 from PySide6.QtMultimedia import QSoundEffect
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QComboBox,
     QDialog,
@@ -131,6 +132,7 @@ class ModernTodoAppWindow(QMainWindow):
         main_layout.addLayout(list_header_layout)
 
         self.list_widget = QListWidget()
+        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.list_widget.setStyleSheet(
             """
             QListWidget { background-color: transparent; border: none; padding: 0px; }
@@ -737,7 +739,8 @@ class ModernTodoAppWindow(QMainWindow):
             item_widget.request_edit.connect(self.handle_edit_request)
             item_widget.request_delete.connect(self.handle_delete_request)
             item_widget.request_toggle_complete.connect(self.handle_toggle_complete_request)
-            list_item.setSizeHint(item_widget.sizeHint())
+            widget_size_hint = item_widget.sizeHint()
+            list_item.setSizeHint(QSize(0, widget_size_hint.height()))
             self.list_widget.addItem(list_item)
             self.list_widget.setItemWidget(list_item, item_widget)
             item_widget.update_timer_display(current_time_utc)
