@@ -46,6 +46,11 @@ from .widgets import TodoItemWidget
 from .theme import ThemeColors, get_theme_manager
 
 
+_MAIN_CONTENT_MARGIN = 15
+_LIST_SCROLLBAR_WIDTH = 8
+_LIST_RIGHT_MARGIN = _MAIN_CONTENT_MARGIN - _LIST_SCROLLBAR_WIDTH
+
+
 class ModernTodoAppWindow(QMainWindow):
     """现代风格的待办事项管理主窗口。"""
 
@@ -91,10 +96,16 @@ class ModernTodoAppWindow(QMainWindow):
         main_widget = QWidget(self)
         self.setCentralWidget(main_widget)
         main_layout = QVBoxLayout(main_widget)
-        main_layout.setContentsMargins(15, 15, 15, 15)
+        main_layout.setContentsMargins(
+            _MAIN_CONTENT_MARGIN,
+            _MAIN_CONTENT_MARGIN,
+            _LIST_RIGHT_MARGIN,
+            _MAIN_CONTENT_MARGIN,
+        )
         main_layout.setSpacing(12)
 
         controls_layout = QHBoxLayout()
+        controls_layout.setContentsMargins(0, 0, _LIST_SCROLLBAR_WIDTH, 0)
         controls_layout.setSpacing(10)
 
         self.filter_label = QLabel("筛选:")
@@ -125,6 +136,7 @@ class ModernTodoAppWindow(QMainWindow):
         main_layout.addLayout(controls_layout)
 
         list_header_layout = QHBoxLayout()
+        list_header_layout.setContentsMargins(0, 0, _LIST_SCROLLBAR_WIDTH, 0)
         self.list_label = QLabel("待办列表")
         list_header_layout.addWidget(self.list_label)
         list_header_layout.addStretch(1)
@@ -134,7 +146,7 @@ class ModernTodoAppWindow(QMainWindow):
         self.list_widget = QListWidget()
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.list_widget.setVerticalScrollMode(QListWidget.ScrollPerPixel)
-        self.list_widget.verticalScrollBar().setFixedWidth(8)
+        self.list_widget.verticalScrollBar().setFixedWidth(_LIST_SCROLLBAR_WIDTH)
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         main_layout.addWidget(self.list_widget, 1)
         self._apply_global_font()
@@ -204,7 +216,7 @@ class ModernTodoAppWindow(QMainWindow):
                 }}
                 QScrollBar:vertical {{
                     background-color: transparent;
-                    width: 8px;
+                    width: {_LIST_SCROLLBAR_WIDTH}px;
                     margin: 0px;
                 }}
                 QScrollBar::handle:vertical {{
