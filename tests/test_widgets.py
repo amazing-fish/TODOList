@@ -208,7 +208,20 @@ class TodoListCardIntegrationTest(unittest.TestCase):
         scrollbar_right = scrollbar.mapTo(
             central_widget, QPoint(scrollbar.width(), 0)
         ).x()
-        self.assertEqual(list_left, central_widget.width() - scrollbar_right)
+        scrollbar_right_spacing = central_widget.width() - scrollbar_right
+        self.assertEqual(scrollbar_right_spacing, 7)
+        self.assertEqual(
+            list_left,
+            scrollbar.width() + scrollbar_right_spacing,
+        )
+
+        add_button_right = window.add_button.mapTo(
+            central_widget, QPoint(window.add_button.width(), 0)
+        ).x()
+        self.assertEqual(
+            list_left,
+            central_widget.width() - add_button_right,
+        )
 
         item = window.list_widget.item(0)
         card = window.list_widget.itemWidget(item)
