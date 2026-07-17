@@ -133,13 +133,8 @@ class ModernTodoAppWindow(QMainWindow):
 
         self.list_widget = QListWidget()
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.list_widget.setStyleSheet(
-            """
-            QListWidget { background-color: transparent; border: none; padding: 0px; }
-            QListWidget::item { border: none; margin: 0px; padding: 0px; }
-            """
-        )
         self.list_widget.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        self.list_widget.verticalScrollBar().setFixedWidth(8)
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         main_layout.addWidget(self.list_widget, 1)
         self._apply_global_font()
@@ -183,12 +178,56 @@ class ModernTodoAppWindow(QMainWindow):
         self.sort_label.setStyleSheet(
             f"color: {palette.text_primary}; font-size: 10pt; background-color: transparent;"
         )
+        self._apply_list_palette(palette)
         self._apply_combo_palette(self.filter_combo, palette)
         self._apply_combo_palette(self.sort_combo, palette)
         if self._empty_placeholder_label is not None:
             self._empty_placeholder_label.setStyleSheet(
                 f"color: {palette.text_secondary}; font-style: italic; font-size: 12pt; background-color: transparent;"
             )
+
+    def _apply_list_palette(self, palette: ThemeColors) -> None:
+        """应用列表及其紧凑纵向滚动条的主题样式。"""
+
+        self.list_widget.setStyleSheet(
+            dedent(
+                f"""
+                QListWidget {{
+                    background-color: transparent;
+                    border: none;
+                    padding: 0px;
+                }}
+                QListWidget::item {{
+                    border: none;
+                    margin: 0px;
+                    padding: 0px;
+                }}
+                QScrollBar:vertical {{
+                    background-color: transparent;
+                    width: 8px;
+                    margin: 0px;
+                }}
+                QScrollBar::handle:vertical {{
+                    background-color: {palette.input_border};
+                    border-radius: 4px;
+                    min-height: 28px;
+                }}
+                QScrollBar::handle:vertical:hover {{
+                    background-color: {palette.accent};
+                }}
+                QScrollBar::add-line:vertical,
+                QScrollBar::sub-line:vertical {{
+                    background: none;
+                    border: none;
+                    height: 0px;
+                }}
+                QScrollBar::add-page:vertical,
+                QScrollBar::sub-page:vertical {{
+                    background-color: transparent;
+                }}
+                """
+            )
+        )
 
     def _build_combo_arrow_uri(self, stroke_color: str) -> str:
         """根据主题颜色构建下拉箭头 SVG 的 data URI。"""

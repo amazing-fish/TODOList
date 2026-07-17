@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, QPointF  # noqa: E402
+from PySide6.QtCore import QEvent, QPoint, QPointF  # noqa: E402
 from PySide6.QtGui import QEnterEvent, QFont, QFontMetrics  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QAbstractItemView,
@@ -185,7 +185,40 @@ class TodoListCardIntegrationTest(unittest.TestCase):
             QAbstractItemView.SelectionMode.NoSelection,
         )
 
-    def _create_window(self) -> ModernTodoAppWindow:
+    def test_vertical_scrollbar_is_compact_and_right_aligned(self) -> None:
+        window = self._create_window(todo_count=10)
+        window.resize(320, 640)
+        window.show()
+        self.app.processEvents()
+
+        scrollbar = window.list_widget.verticalScrollBar()
+        central_widget = window.centralWidget()
+
+        self.assertTrue(scrollbar.isVisible())
+        self.assertEqual(scrollbar.width(), 8)
+        self.assertEqual(
+            scrollbar.mapTo(
+                window.list_widget, QPoint(scrollbar.width(), 0)
+            ).x()
+            - 1,
+            window.list_widget.contentsRect().right(),
+        )
+
+        list_left = window.list_widget.mapTo(central_widget, QPoint(0, 0)).x()
+        scrollbar_right = scrollbar.mapTo(
+            central_widget, QPoint(scrollbar.width(), 0)
+        ).x()
+        self.assertEqual(list_left, central_widget.width() - scrollbar_right)
+
+        item = window.list_widget.item(0)
+        card = window.list_widget.itemWidget(item)
+        self.assertLessEqual(card.width(), window.list_widget.viewport().width())
+        self.assertEqual(
+            window.list_widget.horizontalScrollBarPolicy(),
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
+        )
+
+    def _create_window(self, todo_count: int = 1) -> ModernTodoAppWindow:
         todo = {
             "id": 1,
             "text": "这是一段很长很长的任务文字，用于检查窄窗口下的显示效果",
@@ -197,7 +230,8 @@ class TodoListCardIntegrationTest(unittest.TestCase):
             "createdAt": "2026-07-17T00:00:00+00:00",
             "snoozeUntil": None,
         }
-        load_patcher = patch("todo_app.main_window.load_todos", return_value=[todo])
+        todos = [{**todo, "id": index + 1} for index in range(todo_count)]
+        load_patcher = patch("todo_app.main_window.load_todos", return_value=todos)
         load_patcher.start()
         self.addCleanup(load_patcher.stop)
         window = ModernTodoAppWindow()
