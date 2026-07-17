@@ -11,7 +11,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent  # noqa: E402
 from PySide6.QtGui import QCloseEvent  # noqa: E402
-from PySide6.QtWidgets import QApplication, QCheckBox, QDialog, QLabel  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QCheckBox,
+    QDialog,
+    QLabel,
+    QPushButton,
+)
 
 from todo_app.dialogs import NotificationDialog  # noqa: E402
 from todo_app.main_window import ModernTodoAppWindow  # noqa: E402
@@ -54,7 +60,7 @@ class NotificationDialogTest(unittest.TestCase):
         self.assertIsNotNone(status_label)
         self.assertEqual(status_label.text(), "已到期")
 
-    def test_actions_emit_only_selected_tasks_and_keep_remaining_rows(self) -> None:
+    def test_complete_uses_selection_but_each_snooze_targets_its_own_task(self) -> None:
         dialog = NotificationDialog(
             [(make_todo(1, "第一项"), True), (make_todo(2, "第二项"), True)]
         )
@@ -64,15 +70,33 @@ class NotificationDialogTest(unittest.TestCase):
         self.assertIsNotNone(second_checkbox)
         second_checkbox.setChecked(False)
         completed: list[list[int]] = []
-        snoozed: list[tuple[list[int], timedelta]] = []
+        snoozed: list[tuple[int, timedelta]] = []
         dialog.complete_requested.connect(completed.append)
-        dialog.snooze_requested.connect(lambda ids, duration: snoozed.append((ids, duration)))
+        dialog.snooze_requested.connect(
+            lambda todo_id, duration: snoozed.append((todo_id, duration))
+        )
 
         dialog.complete_button.click()
-        dialog.snooze_default()
+        first_checkbox = dialog.findChild(QCheckBox, "notificationSelect_1")
+        self.assertIsNotNone(first_checkbox)
+        first_checkbox.setChecked(False)
+        first_snooze = dialog.findChild(QPushButton, "notificationSnoozeDefault_1")
+        self.assertIsNotNone(first_snooze)
+        first_snooze.click()
+        second_menu_button = dialog.findChild(
+            QPushButton, "notificationSnoozeMenu_2"
+        )
+        self.assertIsNotNone(second_menu_button)
+        second_menu_button.menu().actions()[1].trigger()
 
         self.assertEqual(completed, [[1]])
-        self.assertEqual(snoozed, [([1], timedelta(minutes=15))])
+        self.assertEqual(
+            snoozed,
+            [
+                (1, timedelta(minutes=15)),
+                (2, timedelta(hours=1)),
+            ],
+        )
 
         dialog.show()
         self.app.processEvents()
@@ -83,6 +107,44 @@ class NotificationDialogTest(unittest.TestCase):
         self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         self.app.processEvents()
         self.assertEqual(destroyed, [True])
+
+    def test_local_clock_snooze_options_keep_cross_day_semantics(self) -> None:
+        dialog = NotificationDialog(
+            [(make_todo(1, "晚上八点"), True), (make_todo(2, "明早九点"), True)]
+        )
+        self.addCleanup(dialog.close)
+        requested: list[tuple[int, timedelta]] = []
+        dialog.snooze_requested.connect(
+            lambda todo_id, duration: requested.append((todo_id, duration))
+        )
+        fixed_now = datetime(
+            2026, 7, 17, 21, 30, tzinfo=timezone(timedelta(hours=8))
+        )
+
+        with patch("todo_app.dialogs._local_now", return_value=fixed_now):
+            dialog.snooze_8pm(1)
+            dialog.snooze_tomorrow_9am(2)
+
+        self.assertEqual(
+            requested,
+            [
+                (1, timedelta(hours=22, minutes=30)),
+                (2, timedelta(hours=11, minutes=30)),
+            ],
+        )
+
+    def test_individual_snooze_preserves_epoch_millisecond_task_id(self) -> None:
+        todo_id = 1_752_000_000_001
+        dialog = NotificationDialog([(make_todo(todo_id, "大编号任务"), True)])
+        self.addCleanup(dialog.close)
+        requested: list[tuple[int, timedelta]] = []
+        dialog.snooze_requested.connect(
+            lambda emitted_id, duration: requested.append((emitted_id, duration))
+        )
+
+        dialog.snooze_default(todo_id)
+
+        self.assertEqual(requested, [(todo_id, timedelta(minutes=15))])
 
     def test_common_three_task_batch_expands_before_scrolling(self) -> None:
         dialog = NotificationDialog(
@@ -361,10 +423,9 @@ class NotificationBatchIntegrationTest(unittest.TestCase):
             window.toggle_complete_todo(3)
             self.assertEqual(dialog.task_ids(), [])
 
-    def test_batch_snooze_keeps_unselected_tasks_unchanged(self) -> None:
+    def test_individual_snoozes_use_different_durations_and_remove_each_row(self) -> None:
         first = make_todo(1, "任务1")
         second = make_todo(2, "任务2")
-        first_before = first.copy()
         FakeNotificationDialog.instances = []
         with (
             patch("todo_app.main_window.load_todos", return_value=[]),
@@ -379,13 +440,24 @@ class NotificationBatchIntegrationTest(unittest.TestCase):
             dialog = FakeNotificationDialog([(first, True), (second, True)], window)
             window._notification_dialog = dialog
 
-            window._handle_notification_snooze([2], timedelta(minutes=15))
+            window._handle_notification_snooze(1, timedelta(minutes=15))
 
-            self.assertEqual(first, first_before)
+            self.assertIsNotNone(first["snoozeUntil"])
+            self.assertIsNone(second["snoozeUntil"])
+            self.assertEqual(dialog.task_ids(), [2])
+            window._handle_notification_snooze(2, timedelta(hours=1))
+
             self.assertIsNotNone(second["snoozeUntil"])
-            self.assertEqual(dialog.task_ids(), [1])
-            self.assertEqual(save_mock.call_count, 1)
-            self.assertEqual(window.update_list_widget.call_count, 1)
+            first_target = datetime.fromisoformat(first["snoozeUntil"])
+            second_target = datetime.fromisoformat(second["snoozeUntil"])
+            self.assertAlmostEqual(
+                (second_target - first_target).total_seconds(),
+                timedelta(minutes=45).total_seconds(),
+                delta=2,
+            )
+            self.assertEqual(dialog.task_ids(), [])
+            self.assertEqual(save_mock.call_count, 2)
+            self.assertEqual(window.update_list_widget.call_count, 2)
 
     def _close_window(self, window: ModernTodoAppWindow) -> None:
         window.master_timer.stop()

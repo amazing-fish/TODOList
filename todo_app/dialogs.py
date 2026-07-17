@@ -38,11 +38,15 @@ def _default_due_datetime(now_qdt: QDateTime) -> QDateTime:
     return target.addMSecs(-hidden_msecs)
 
 
+def _local_now() -> datetime:
+    return datetime.now().astimezone()
+
+
 class NotificationDialog(QDialog):
     """在一个软件窗口中汇总待处理的任务提醒。"""
 
     complete_requested = Signal(list)
-    snooze_requested = Signal(list, object)
+    snooze_requested = Signal(object, object)
 
     def __init__(self, requests: list[tuple[dict, bool]], parent=None):
         super().__init__(parent)
@@ -57,7 +61,7 @@ class NotificationDialog(QDialog):
     def _build_ui(self, parent=None) -> None:
         self.setWindowTitle("任务提醒")
         self.setWindowIcon(get_icon(APP_ICON_PATH, "🔔"))
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(560)
         self.setModal(False)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
@@ -85,34 +89,10 @@ class NotificationDialog(QDialog):
         self.dismiss_button = QPushButton("忽略全部")
         self.dismiss_button.clicked.connect(self.reject)
 
-        snooze_widget = QWidget()
-        snooze_layout = QHBoxLayout(snooze_widget)
-        snooze_layout.setContentsMargins(0, 0, 0, 0)
-        snooze_layout.setSpacing(1)
-
-        self.snooze_default_button = QPushButton(get_icon("", "⏰"), " 选中推迟15分钟")
-        self.snooze_default_button.setObjectName("snoozeDefaultButton")
-        self.snooze_default_button.clicked.connect(self.snooze_default)
-
-        self.snooze_menu_button = QPushButton("▼")
-        self.snooze_menu_button.setObjectName("snoozeMenuButton")
-        self.snooze_menu_button.setFixedWidth(30)
-
-        snooze_menu = QMenu(self)
-        snooze_menu.addAction("15分钟后", self.snooze_default)
-        snooze_menu.addAction("1小时后", self.snooze_1_hour)
-        snooze_menu.addAction("晚上8点", self.snooze_8pm)
-        snooze_menu.addAction("明天上午9点", self.snooze_tomorrow_9am)
-        self.snooze_menu_button.setMenu(snooze_menu)
-
-        snooze_layout.addWidget(self.snooze_default_button)
-        snooze_layout.addWidget(self.snooze_menu_button)
-
         button_layout.addWidget(self.complete_button)
         button_layout.addSpacerItem(
             QSpacerItem(20, 10, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         )
-        button_layout.addWidget(snooze_widget)
         button_layout.addWidget(self.dismiss_button)
         layout.addLayout(button_layout)
 
@@ -135,7 +115,7 @@ class NotificationDialog(QDialog):
             checkbox = QCheckBox()
             checkbox.setObjectName(f"notificationSelect_{todo_id}")
             checkbox.setChecked(True)
-            checkbox.setToolTip("选择此任务进行批量处理")
+            checkbox.setToolTip("选择此任务进行批量完成")
             row_layout.addWidget(checkbox)
 
             content_layout = QVBoxLayout()
@@ -154,6 +134,49 @@ class NotificationDialog(QDialog):
             content_layout.addWidget(status_label)
             row_layout.addLayout(content_layout, 1)
 
+            snooze_widget = QWidget(row_widget)
+            snooze_layout = QHBoxLayout(snooze_widget)
+            snooze_layout.setContentsMargins(0, 0, 0, 0)
+            snooze_layout.setSpacing(1)
+
+            snooze_default_button = QPushButton(
+                get_icon("", "⏰"), " 推迟 15 分钟", snooze_widget
+            )
+            snooze_default_button.setObjectName(
+                f"notificationSnoozeDefault_{todo_id}"
+            )
+            snooze_default_button.setProperty("snoozeRole", "default")
+            snooze_default_button.setToolTip("将此任务推迟 15 分钟")
+            snooze_default_button.clicked.connect(
+                lambda _checked=False, task_id=todo_id: self.snooze_default(task_id)
+            )
+
+            snooze_menu_button = QPushButton("▼", snooze_widget)
+            snooze_menu_button.setObjectName(f"notificationSnoozeMenu_{todo_id}")
+            snooze_menu_button.setProperty("snoozeRole", "menu")
+            snooze_menu_button.setToolTip("选择此任务的推迟时间")
+            snooze_menu_button.setFixedWidth(30)
+
+            snooze_menu = QMenu(snooze_menu_button)
+            snooze_actions = (
+                ("15分钟后", self.snooze_default),
+                ("1小时后", self.snooze_1_hour),
+                ("晚上8点", self.snooze_8pm),
+                ("明天上午9点", self.snooze_tomorrow_9am),
+            )
+            for label, callback in snooze_actions:
+                action = snooze_menu.addAction(label)
+                action.triggered.connect(
+                    lambda _checked=False, task_id=todo_id, handler=callback: handler(
+                        task_id
+                    )
+                )
+            snooze_menu_button.setMenu(snooze_menu)
+
+            snooze_layout.addWidget(snooze_default_button)
+            snooze_layout.addWidget(snooze_menu_button)
+            row_layout.addWidget(snooze_widget)
+
             self.tasks_layout.addWidget(row_widget)
             self._task_rows[todo_id] = {
                 "todo_item": todo_item,
@@ -163,6 +186,9 @@ class NotificationDialog(QDialog):
                 "text_label": text_label,
                 "detail_label": detail_label,
                 "status_label": status_label,
+                "snooze_default_button": snooze_default_button,
+                "snooze_menu_button": snooze_menu_button,
+                "snooze_menu": snooze_menu,
             }
             self._update_task_row(todo_id)
 
@@ -251,28 +277,39 @@ class NotificationDialog(QDialog):
                 padding: 8px 12px; border-radius: 4px; font-size: 10pt;
             }}
             QPushButton:hover {{ background-color: {palette.accent_hover}; }}
-            QPushButton#snoozeDefaultButton, QPushButton#snoozeMenuButton {{
+            QPushButton[snoozeRole="default"], QPushButton[snoozeRole="menu"] {{
                 background-color: {palette.priority_medium};
                 color: {palette.inverse_text};
                 padding-top: 8px;
                 padding-bottom: 8px;
             }}
-            QPushButton#snoozeDefaultButton:hover, QPushButton#snoozeMenuButton:hover {{
+            QPushButton[snoozeRole="default"]:hover, QPushButton[snoozeRole="menu"]:hover {{
                 background-color: {palette.due_warning};
             }}
-            QPushButton#snoozeDefaultButton {{
+            QPushButton[snoozeRole="default"] {{
                 border-top-right-radius: 0px;
                 border-bottom-right-radius: 0px;
                 padding-left: 12px;
                 padding-right: 12px;
             }}
-            QPushButton#snoozeMenuButton {{
+            QPushButton[snoozeRole="menu"] {{
                 border-top-left-radius: 0px;
                 border-bottom-left-radius: 0px;
                 padding-left: 6px;
                 padding-right: 6px;
             }}
-            QPushButton#snoozeMenuButton::menu-indicator {{ image: none; }}
+            QPushButton[snoozeRole="menu"]::menu-indicator {{ image: none; }}
+            QMenu {{
+                background-color: {palette.background};
+                color: {palette.text_primary};
+                border: 1px solid {palette.card_border};
+                padding: 4px;
+            }}
+            QMenu::item {{ padding: 7px 20px; border-radius: 3px; }}
+            QMenu::item:selected {{
+                background-color: {palette.accent};
+                color: {palette.inverse_text};
+            }}
             """
         )
         self.title_label.setStyleSheet(
@@ -291,25 +328,24 @@ class NotificationDialog(QDialog):
     def _on_theme_changed(self, palette: ThemeColors) -> None:
         self._apply_palette(palette)
 
-    def _emit_snooze_requested(self, duration: timedelta) -> None:
-        selected_ids = self.selected_task_ids()
-        if selected_ids:
-            self.snooze_requested.emit(selected_ids, duration)
+    def _emit_snooze_requested(self, todo_id: int, duration: timedelta) -> None:
+        if todo_id in self._task_rows:
+            self.snooze_requested.emit(todo_id, duration)
 
-    def snooze_default(self) -> None:
-        self._emit_snooze_requested(timedelta(minutes=15))
+    def snooze_default(self, todo_id: int) -> None:
+        self._emit_snooze_requested(todo_id, timedelta(minutes=15))
 
-    def snooze_1_hour(self) -> None:
-        self._emit_snooze_requested(timedelta(hours=1))
+    def snooze_1_hour(self, todo_id: int) -> None:
+        self._emit_snooze_requested(todo_id, timedelta(hours=1))
 
-    def snooze_tomorrow_9am(self) -> None:
-        now = datetime.now().astimezone()
+    def snooze_tomorrow_9am(self, todo_id: int) -> None:
+        now = _local_now()
         tomorrow_date = now.date() + timedelta(days=1)
         target_dt = datetime.combine(tomorrow_date, time(9, 0), tzinfo=now.tzinfo)
-        self._emit_snooze_requested(target_dt - now)
+        self._emit_snooze_requested(todo_id, target_dt - now)
 
-    def snooze_8pm(self) -> None:
-        now = datetime.now().astimezone()
+    def snooze_8pm(self, todo_id: int) -> None:
+        now = _local_now()
         target_dt = datetime.combine(now.date(), time(20, 0), tzinfo=now.tzinfo)
         if target_dt <= now:
             target_dt = datetime.combine(
@@ -317,7 +353,7 @@ class NotificationDialog(QDialog):
                 time(20, 0),
                 tzinfo=now.tzinfo,
             )
-        self._emit_snooze_requested(target_dt - now)
+        self._emit_snooze_requested(todo_id, target_dt - now)
 
 
 class TaskEditDialog(QDialog):

@@ -506,17 +506,18 @@ class ModernTodoAppWindow(QMainWindow):
             self.update_list_widget()
 
     def _handle_notification_snooze(
-        self, todo_ids: list[int], snooze_duration: timedelta
+        self, todo_id: int, snooze_duration: timedelta
     ) -> None:
-        requested_ids = {int(todo_id) for todo_id in todo_ids}
+        requested_id = int(todo_id)
         changed = False
         for todo in self.todos:
-            if todo.get("id") not in requested_ids or todo.get("completed", False):
+            if todo.get("id") != requested_id or todo.get("completed", False):
                 continue
             todo.update(build_snooze_update_fields(todo, snooze_duration))
             changed = True
+            break
 
-        self._remove_notification_tasks(list(requested_ids))
+        self._remove_notification_tasks([requested_id])
         if changed:
             save_todos(self.todos)
             self.update_list_widget()
