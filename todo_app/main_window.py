@@ -146,7 +146,7 @@ class ModernTodoAppWindow(QMainWindow):
 
         self.list_widget = QListWidget()
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        # QListWidget 会在相邻 item 两侧各保留 spacing，因此取目标卡片间距的一半。
+        # QListView::spacing 会填充每个 item 四周，相邻卡片间距因此是该值的两倍。
         self.list_widget.setSpacing(_TODO_CARD_GAP // 2)
         self.list_widget.setVerticalScrollMode(QListWidget.ScrollPerPixel)
         self.list_widget.verticalScrollBar().setFixedWidth(_LIST_SCROLLBAR_WIDTH)

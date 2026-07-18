@@ -288,6 +288,7 @@ class TodoListCardIntegrationTest(unittest.TestCase):
         second_card = window.list_widget.itemWidget(second_item)
         card_gap = second_card.geometry().top() - first_card.geometry().bottom() - 1
 
+        self.assertEqual(card_gap, window.list_widget.spacing() * 2)
         self.assertEqual(card_gap, 8)
         self.assertGreaterEqual(first_item.sizeHint().height(), first_card.minimumHeight())
         self.assertGreaterEqual(second_item.sizeHint().height(), second_card.minimumHeight())
