@@ -4,10 +4,19 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
-from urllib.parse import quote
 from textwrap import dedent
 
-from PySide6.QtCore import QByteArray, QEvent, QSettings, QTimer, Qt, QSize, Slot
+from PySide6.QtCore import (
+    QByteArray,
+    QEvent,
+    QPointF,
+    QSettings,
+    QTimer,
+    Qt,
+    QSize,
+    Slot,
+)
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtMultimedia import QSoundEffect
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -25,6 +34,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QStyle,
     QStyleOptionComboBox,
+    QStylePainter,
     QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
@@ -50,6 +60,74 @@ _MAIN_CONTENT_MARGIN = 15
 _LIST_SCROLLBAR_WIDTH = 8
 _LIST_RIGHT_MARGIN = _MAIN_CONTENT_MARGIN - _LIST_SCROLLBAR_WIDTH
 _TODO_CARD_GAP = 8
+_FILTER_COMBO_EXTRA_WIDTH = 26
+_SORT_COMBO_MIN_WIDTH = 76
+
+
+class _ResponsiveComboBox(QComboBox):
+    """在窄布局中省略当前文本，并绘制可辨识的主题箭头。"""
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._arrow_color = "#000000"
+        self._disabled_arrow_color = "#808080"
+
+    def set_arrow_colors(self, normal: str, disabled: str) -> None:
+        self._arrow_color = normal
+        self._disabled_arrow_color = disabled
+        self.update()
+
+    def initStyleOption(self, option: QStyleOptionComboBox) -> None:  # noqa: N802
+        super().initStyleOption(option)
+        edit_rect = self.style().subControlRect(
+            QStyle.ComplexControl.CC_ComboBox,
+            option,
+            QStyle.SubControl.SC_ComboBoxEditField,
+            self,
+        )
+        option.currentText = option.fontMetrics.elidedText(
+            option.currentText,
+            Qt.TextElideMode.ElideRight,
+            max(edit_rect.width(), 0),
+        )
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        size_hint = super().minimumSizeHint()
+        return QSize(self.minimumWidth(), size_hint.height())
+
+    def paintEvent(self, event: QEvent) -> None:  # noqa: N802
+        painter = QStylePainter(self)
+        option = QStyleOptionComboBox()
+        self.initStyleOption(option)
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option)
+        painter.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, option)
+
+        arrow_rect = self.style().subControlRect(
+            QStyle.ComplexControl.CC_ComboBox,
+            option,
+            QStyle.SubControl.SC_ComboBoxArrow,
+            self,
+        )
+        arrow_color = (
+            self._arrow_color
+            if self.isEnabled()
+            else self._disabled_arrow_color
+        )
+        pen = QPen(QColor(arrow_color), 1.5)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(pen)
+        center = arrow_rect.center()
+        painter.drawLine(
+            QPointF(center.x() - 4, center.y() - 2),
+            QPointF(center.x(), center.y() + 2),
+        )
+        painter.drawLine(
+            QPointF(center.x(), center.y() + 2),
+            QPointF(center.x() + 4, center.y() - 2),
+        )
+        painter.end()
 
 
 class ModernTodoAppWindow(QMainWindow):
@@ -111,14 +189,14 @@ class ModernTodoAppWindow(QMainWindow):
 
         self.filter_label = QLabel("筛选:")
         controls_layout.addWidget(self.filter_label)
-        self.filter_combo = QComboBox()
+        self.filter_combo = _ResponsiveComboBox()
         self.filter_combo.addItems(["全部", "未完成", "已完成", "今天到期", "高优先级"])
         self.filter_combo.currentTextChanged.connect(self.update_list_widget)
         controls_layout.addWidget(self.filter_combo)
 
         self.sort_label = QLabel("排序:")
         controls_layout.addWidget(self.sort_label)
-        self.sort_combo = QComboBox()
+        self.sort_combo = _ResponsiveComboBox()
         self.sort_combo.addItems(
             ["创建时间 (新->旧)", "创建时间 (旧->新)", "截止日期 (近->远)", "截止日期 (远->近)", "优先级 (高->低)"]
         )
@@ -149,8 +227,11 @@ class ModernTodoAppWindow(QMainWindow):
         # QListView::spacing 会填充每个 item 四周，相邻卡片间距因此是该值的两倍。
         self.list_widget.setSpacing(_TODO_CARD_GAP // 2)
         self.list_widget.setVerticalScrollMode(QListWidget.ScrollPerPixel)
-        self.list_widget.verticalScrollBar().setFixedWidth(_LIST_SCROLLBAR_WIDTH)
+        scrollbar = self.list_widget.verticalScrollBar()
+        scrollbar.setFixedWidth(_LIST_SCROLLBAR_WIDTH)
+        scrollbar.rangeChanged.connect(self._sync_list_scrollbar_gutter)
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._sync_list_scrollbar_gutter()
         main_layout.addWidget(self.list_widget, 1)
         self._apply_global_font()
         self._apply_palette(self._palette)
@@ -244,16 +325,29 @@ class ModernTodoAppWindow(QMainWindow):
             )
         )
 
-    def _build_combo_arrow_uri(self, stroke_color: str) -> str:
-        """根据主题颜色构建下拉箭头 SVG 的 data URI。"""
+    def _sync_list_scrollbar_gutter(
+        self,
+        _minimum: int = 0,
+        _maximum: int = 0,
+    ) -> None:
+        """滚动条隐藏时保留等宽 gutter，使卡片左右外边距稳定。"""
 
-        svg = (
-            "<svg width=\"12\" height=\"8\" viewBox=\"0 0 12 8\" xmlns=\"http://www.w3.org/2000/svg\">"
-            f"<path d=\"M1.5 2.25L6 6.75L10.5 2.25\" stroke=\"{stroke_color}\" stroke-width=\"1.5\" "
-            "stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
-            "</svg>"
+        scrollbar = self.list_widget.verticalScrollBar()
+        right_gutter = (
+            0
+            if scrollbar.maximum() > scrollbar.minimum()
+            else _LIST_SCROLLBAR_WIDTH
         )
-        return f"data:image/svg+xml,{quote(svg)}"
+        margins = self.list_widget.viewportMargins()
+        if margins.right() == right_gutter:
+            return
+
+        self.list_widget.setViewportMargins(
+            margins.left(),
+            margins.top(),
+            right_gutter,
+            margins.bottom(),
+        )
 
     def _apply_combo_palette(self, combo: Optional[QComboBox], palette: ThemeColors) -> None:
         """为筛选和排序下拉框应用主题色样式。"""
@@ -261,12 +355,7 @@ class ModernTodoAppWindow(QMainWindow):
         if combo is None:
             return
 
-        combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         combo.setCursor(Qt.CursorShape.PointingHandCursor)
-
-        arrow_normal = self._build_combo_arrow_uri(palette.text_primary)
-        arrow_disabled = self._build_combo_arrow_uri(palette.text_secondary)
 
         combo.setStyleSheet(
             dedent(
@@ -297,12 +386,9 @@ class ModernTodoAppWindow(QMainWindow):
                     background-color: transparent;
                 }}
                 QComboBox::down-arrow {{
-                    image: url('{arrow_normal}');
-                    width: 9px;
-                    height: 5px;
-                }}
-                QComboBox::down-arrow:disabled {{
-                    image: url('{arrow_disabled}');
+                    image: none;
+                    width: 0px;
+                    height: 0px;
                 }}
                 QComboBox QListView,
                 QComboBox QAbstractItemView {{
@@ -329,10 +415,16 @@ class ModernTodoAppWindow(QMainWindow):
             )
         )
 
+        if isinstance(combo, _ResponsiveComboBox):
+            combo.set_arrow_colors(
+                palette.text_primary,
+                palette.text_secondary,
+            )
+
         self._update_combo_compact_width(combo)
 
     def _update_combo_compact_width(self, combo: Optional[QComboBox]) -> None:
-        """根据内容与样式计算组合框宽度，避免文本被截断或出现空白区。"""
+        """让筛选框保持紧凑，并允许排序框在最小窗口内收缩。"""
 
         if combo is None:
             return
@@ -340,19 +432,21 @@ class ModernTodoAppWindow(QMainWindow):
         if combo.count() == 0:
             return
 
-        metrics = combo.fontMetrics()
-        max_text = max(
-            (combo.itemText(index) for index in range(combo.count())),
-            key=metrics.horizontalAdvance,
-        )
-        text_width = metrics.horizontalAdvance(max_text)
-        option = QStyleOptionComboBox()
-        option.initFrom(combo)
-        option.currentText = max_text
-        option.fontMetrics = metrics
-        size = combo.style().sizeFromContents(QStyle.CT_ComboBox, option, QSize(text_width, 0), combo)
-        combo.setFixedWidth(size.width() + 2)
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        if combo is self.filter_combo:
+            metrics = combo.fontMetrics()
+            max_text_width = max(
+                metrics.horizontalAdvance(combo.itemText(index))
+                for index in range(combo.count())
+            )
+            combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            combo.setFixedWidth(max_text_width + _FILTER_COMBO_EXTRA_WIDTH)
+            return
 
+        combo.setMinimumWidth(_SORT_COMBO_MIN_WIDTH)
+        combo.setMaximumWidth(16777215)
+        combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        combo.updateGeometry()
 
     def _refresh_item_widgets_palette(self, palette: ThemeColors) -> None:
         """遍历所有待办卡片并刷新其配色。"""
@@ -1017,7 +1111,8 @@ class ModernTodoAppWindow(QMainWindow):
         viewport = self.list_widget.viewport() if self.list_widget else None
         viewport_size = viewport.size() if viewport else self.list_widget.size()
         width = max(viewport_size.width() - 10, 200)
-        height = max(viewport_size.height(), 160)
+        vertical_spacing = self.list_widget.spacing() * 2
+        height = max(viewport_size.height() - vertical_spacing, 160)
         self._empty_placeholder_item.setSizeHint(QSize(width, height))
         self._empty_placeholder_widget.setMinimumSize(width, height)
 

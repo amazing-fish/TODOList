@@ -10,14 +10,18 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt  # noqa: E402
-from PySide6.QtGui import QEnterEvent, QFont, QFontMetrics  # noqa: E402
+from PySide6.QtGui import QColor, QEnterEvent, QFont, QFontMetrics  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QAbstractItemView,
     QApplication,
+    QSizePolicy,
+    QStyle,
+    QStyleOptionComboBox,
     QVBoxLayout,
     QWidget,
 )
 
+from todo_app.constants import DARK_THEME_COLORS, LIGHT_THEME_COLORS  # noqa: E402
 from todo_app.main_window import ModernTodoAppWindow  # noqa: E402
 from todo_app.widgets import TodoItemWidget  # noqa: E402
 from todo_app.utils import truncate_text_for_width  # noqa: E402
@@ -302,6 +306,262 @@ class TodoListCardIntegrationTest(unittest.TestCase):
             viewport_image.pixelColor(sample_x, gap_y).rgba(),
         )
 
+    def test_hidden_scrollbar_keeps_card_outer_margins_symmetric(self) -> None:
+        for todo_count in (1, 2):
+            with self.subTest(todo_count=todo_count):
+                window = self._create_window(todo_count=todo_count)
+                window.resize(320, 640)
+                window.show()
+                self._settle_list_layout(window)
+
+                self.assertFalse(window.list_widget.verticalScrollBar().isVisible())
+                left_margin, right_margin = self._card_outer_margins(window)
+                self.assertLessEqual(abs(left_margin - right_margin), 1)
+                self.assertEqual(
+                    window.list_widget.horizontalScrollBarPolicy(),
+                    Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
+                )
+
+    def test_empty_placeholder_does_not_force_vertical_scrollbar(self) -> None:
+        window = self._create_window(todo_count=0)
+        window.resize(320, 640)
+        window.show()
+        self._settle_list_layout(window)
+
+        scrollbar = window.list_widget.verticalScrollBar()
+        self.assertFalse(scrollbar.isVisible())
+        self.assertEqual(scrollbar.minimum(), scrollbar.maximum())
+        self.assertEqual(window.list_widget.viewportMargins().right(), 8)
+
+    def test_scrollbar_visibility_transition_preserves_outer_margin_contract(self) -> None:
+        window = self._create_window(todo_count=6)
+        window.resize(320, 560)
+        window.show()
+
+        for height, expected_visible in ((560, True), (900, False), (560, True)):
+            with self.subTest(height=height, expected_visible=expected_visible):
+                window.resize(320, height)
+                self._settle_list_layout(window)
+
+                scrollbar = window.list_widget.verticalScrollBar()
+                self.assertEqual(scrollbar.isVisible(), expected_visible)
+                left_margin, right_margin = self._card_outer_margins(window)
+                self.assertLessEqual(abs(left_margin - right_margin), 1)
+                self.assertEqual(scrollbar.width(), 8)
+                self.assertFalse(window.list_widget.horizontalScrollBar().isVisible())
+
+    def test_task_count_transition_preserves_outer_margin_contract(self) -> None:
+        window = self._create_window(todo_count=6)
+        window.resize(320, 640)
+        window.show()
+        all_todos = [todo.copy() for todo in window.todos]
+
+        for todo_count, expected_visible in ((2, False), (6, True), (1, False)):
+            with self.subTest(
+                todo_count=todo_count,
+                expected_visible=expected_visible,
+            ):
+                window.todos = [
+                    todo.copy() for todo in all_todos[:todo_count]
+                ]
+                window.update_list_widget()
+                self._settle_list_layout(window)
+
+                scrollbar = window.list_widget.verticalScrollBar()
+                self.assertEqual(scrollbar.isVisible(), expected_visible)
+                left_margin, right_margin = self._card_outer_margins(window)
+                self.assertLessEqual(abs(left_margin - right_margin), 1)
+                self.assertFalse(window.list_widget.horizontalScrollBar().isVisible())
+
+    def test_multiline_task_summary_recovers_across_consecutive_resizes(self) -> None:
+        now = datetime.now(timezone.utc)
+        original_text = (
+            "第一段任务内容保留开头\r\n"
+            "第二段任务内容需要折叠\n"
+            "第三段用于验证重新拉宽恢复"
+        )
+        single_line_summary = (
+            "第一段任务内容保留开头 "
+            "第二段任务内容需要折叠 "
+            "第三段用于验证重新拉宽恢复"
+        )
+        common_fields = {
+            "priority": "中",
+            "completed": False,
+            "dueDate": (now + timedelta(days=123)).isoformat(),
+            "createdAt": now.isoformat(),
+            "snoozeUntil": None,
+        }
+        window = self._create_window(
+            todos=[
+                {**common_fields, "id": 1, "text": original_text},
+                {**common_fields, "id": 2, "text": "相邻单行任务"},
+            ]
+        )
+        window.resize(900, 640)
+        window.show()
+
+        displayed_by_width: dict[int, str] = {}
+        stable_card_height: int | None = None
+        for width in (900, 320, 900):
+            window.resize(width, 640)
+            self._settle_list_layout(window)
+
+            first_item = window.list_widget.item(0)
+            second_item = window.list_widget.item(1)
+            card = window.list_widget.itemWidget(first_item)
+            adjacent_card = window.list_widget.itemWidget(second_item)
+            displayed_text = card.task_text_label.text()
+            displayed_by_width[width] = displayed_text
+
+            self.assertNotIn("\r", displayed_text)
+            self.assertNotIn("\n", displayed_text)
+            self.assertLessEqual(
+                card.task_text_label.fontMetrics().horizontalAdvance(displayed_text),
+                card.task_text_label.contentsRect().width(),
+            )
+            self.assertEqual(card.task_text_label.toolTip(), original_text)
+            self.assertEqual(card.todo_item["text"], original_text)
+            self.assertEqual(window.todos[0]["text"], original_text)
+            self.assertEqual(card.height(), adjacent_card.height())
+            self.assertEqual(
+                card.task_text_label.height(),
+                adjacent_card.task_text_label.height(),
+            )
+            self.assertEqual(
+                adjacent_card.geometry().top() - card.geometry().bottom() - 1,
+                8,
+            )
+            self.assertGreaterEqual(card.task_text_label.width(), 150)
+            self.assertGreaterEqual(card.timer_display_label.width(), 50)
+
+            if stable_card_height is None:
+                stable_card_height = card.height()
+            self.assertEqual(card.height(), stable_card_height)
+
+            if width == 320:
+                self.assertTrue(displayed_text.startswith(single_line_summary[:6]))
+                self.assertTrue(displayed_text.endswith("…"))
+                self.assertNotEqual(displayed_text, single_line_summary)
+
+                idle_task_geometry = card.task_text_label.geometry()
+                idle_timer_geometry = card.timer_display_label.geometry()
+                card.enterEvent(
+                    QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1))
+                )
+                self.app.processEvents()
+                self.assertEqual(card.task_text_label.geometry(), idle_task_geometry)
+                self.assertEqual(card.timer_display_label.geometry(), idle_timer_geometry)
+                card.leaveEvent(QEvent(QEvent.Type.Leave))
+
+        self.assertEqual(displayed_by_width[900], single_line_summary)
+
+    def test_minimum_width_controls_keep_sort_combo_and_arrow_visible(self) -> None:
+        window = self._create_window(todo_count=0)
+        window.resize(320, 640)
+        window.show()
+        self._settle_list_layout(window)
+
+        central_widget = window.centralWidget()
+        controls_left = window.filter_label.mapTo(
+            central_widget, QPoint(0, 0)
+        ).x()
+        controls_right = central_widget.width() - controls_left
+        controls = (
+            window.filter_label,
+            window.filter_combo,
+            window.sort_label,
+            window.sort_combo,
+        )
+        control_bounds = [
+            (
+                control.mapTo(central_widget, QPoint(0, 0)).x(),
+                control.mapTo(
+                    central_widget, QPoint(control.width(), 0)
+                ).x(),
+            )
+            for control in controls
+        ]
+
+        self.assertLessEqual(window.minimumSizeHint().width(), window.minimumWidth())
+        for left, right in control_bounds:
+            self.assertGreaterEqual(left, controls_left)
+            self.assertLessEqual(right, controls_right)
+        for (_, current_right), (next_left, _) in zip(
+            control_bounds, control_bounds[1:]
+        ):
+            self.assertLessEqual(current_right, next_left)
+
+        max_filter_text_width = max(
+            window.filter_combo.fontMetrics().horizontalAdvance(
+                window.filter_combo.itemText(index)
+            )
+            for index in range(window.filter_combo.count())
+        )
+        self.assertLessEqual(
+            window.filter_combo.width(),
+            max_filter_text_width + 30,
+        )
+        self.assertEqual(
+            window.sort_combo.sizePolicy().horizontalPolicy(),
+            QSizePolicy.Policy.Expanding,
+        )
+
+        for palette in (LIGHT_THEME_COLORS, DARK_THEME_COLORS):
+            with self.subTest(theme_background=palette.background):
+                window._on_theme_changed(palette)
+                self.app.processEvents()
+                for combo in (window.filter_combo, window.sort_combo):
+                    self._assert_combo_arrow_uses_color(
+                        combo,
+                        palette.text_primary,
+                    )
+
+        option = QStyleOptionComboBox()
+        option.initFrom(window.sort_combo)
+        option.currentText = window.sort_combo.currentText()
+        arrow_rect = window.sort_combo.style().subControlRect(
+            QStyle.ComplexControl.CC_ComboBox,
+            option,
+            QStyle.SubControl.SC_ComboBoxArrow,
+            window.sort_combo,
+        )
+        arrow_left = window.sort_combo.mapTo(
+            central_widget, arrow_rect.topLeft()
+        ).x()
+        arrow_right = window.sort_combo.mapTo(
+            central_widget, arrow_rect.bottomRight()
+        ).x()
+        self.assertGreaterEqual(arrow_left, control_bounds[-1][0])
+        self.assertLessEqual(arrow_right, controls_right)
+
+        narrow_option = QStyleOptionComboBox()
+        window.sort_combo.initStyleOption(narrow_option)
+        self.assertTrue(narrow_option.currentText.endswith("…"))
+        self.assertNotEqual(
+            narrow_option.currentText,
+            window.sort_combo.currentText(),
+        )
+        self.assertEqual(
+            [
+                window.sort_combo.itemText(index)
+                for index in range(window.sort_combo.count())
+            ],
+            [
+                "创建时间 (新->旧)",
+                "创建时间 (旧->新)",
+                "截止日期 (近->远)",
+                "截止日期 (远->近)",
+                "优先级 (高->低)",
+            ],
+        )
+
+        window.resize(500, 640)
+        self._settle_list_layout(window)
+        wide_option = QStyleOptionComboBox()
+        window.sort_combo.initStyleOption(wide_option)
+        self.assertEqual(wide_option.currentText, window.sort_combo.currentText())
+
     def test_vertical_scrollbar_is_compact_and_right_aligned(self) -> None:
         window = self._create_window(todo_count=10)
         window.resize(320, 640)
@@ -342,10 +602,70 @@ class TodoListCardIntegrationTest(unittest.TestCase):
 
         item = window.list_widget.item(0)
         card = window.list_widget.itemWidget(item)
+        left_margin, right_margin = self._card_outer_margins(window)
+        self.assertLessEqual(abs(left_margin - right_margin), 1)
         self.assertLessEqual(card.width(), window.list_widget.viewport().width())
         self.assertEqual(
             window.list_widget.horizontalScrollBarPolicy(),
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
+        )
+
+    @classmethod
+    def _settle_list_layout(cls, window: ModernTodoAppWindow) -> None:
+        cls.app.processEvents()
+        window.centralWidget().layout().activate()
+        window.list_widget.doItemsLayout()
+        cls.app.processEvents()
+
+    @staticmethod
+    def _card_outer_margins(
+        window: ModernTodoAppWindow,
+        index: int = 0,
+    ) -> tuple[int, int]:
+        item = window.list_widget.item(index)
+        card = window.list_widget.itemWidget(item)
+        central_widget = window.centralWidget()
+        left_margin = card.mapTo(central_widget, QPoint(0, 0)).x()
+        right_margin = central_widget.width() - card.mapTo(
+            central_widget, QPoint(card.width(), 0)
+        ).x()
+        return left_margin, right_margin
+
+    def _assert_combo_arrow_uses_color(
+        self,
+        combo,
+        expected_color: str,
+    ) -> None:
+        option = QStyleOptionComboBox()
+        combo.initStyleOption(option)
+        arrow_rect = combo.style().subControlRect(
+            QStyle.ComplexControl.CC_ComboBox,
+            option,
+            QStyle.SubControl.SC_ComboBoxArrow,
+            combo,
+        )
+        pixmap = combo.grab()
+        image = pixmap.toImage()
+        device_pixel_ratio = pixmap.devicePixelRatio()
+        expected = QColor(expected_color)
+
+        def is_expected_arrow_pixel(x: int, y: int) -> bool:
+            pixel = image.pixelColor(
+                min(int(x * device_pixel_ratio), image.width() - 1),
+                min(int(y * device_pixel_ratio), image.height() - 1),
+            )
+            return max(
+                abs(pixel.red() - expected.red()),
+                abs(pixel.green() - expected.green()),
+                abs(pixel.blue() - expected.blue()),
+            ) <= 24
+
+        self.assertTrue(
+            any(
+                is_expected_arrow_pixel(x, y)
+                for y in range(arrow_rect.top(), arrow_rect.bottom() + 1)
+                for x in range(arrow_rect.left(), arrow_rect.right() + 1)
+            )
         )
 
     def _create_window(
