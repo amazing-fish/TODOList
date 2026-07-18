@@ -4,8 +4,10 @@
 
 ## 最新更新
 
+- 📝 任务正文会在卡片内保留原始换行并按可用宽度自动换行；连续缩放窗口时，卡片与列表项高度会随行数增减，不再用单行省略号替代正文。
+- 🎛️ 320px 最小窗口下，筛选框按实际字体、内边距、边框和箭头测量，所有四字筛选项均完整显示；排序框仍可在空间不足时从末尾省略。
+- ➕ 添加按钮改用主题化程序加号，圆形背景仅由按钮状态样式绘制；应用启动时注册内置 HarmonyOS Sans SC，使中英文控件共享同一字体来源并在资源失败时安全回退系统字体。
 - 📐 任务较少或为空时，列表会在滚动条位置保留等宽 viewport gutter，使卡片左右外边距继续对称；滚动条出现后仍保持 8px 紧凑样式且不裁切卡片。
-- 📝 含 `LF` / `CRLF` 的任务在列表中会折叠为可恢复的单行摘要，缩窄时从末尾省略并通过 tooltip 保留完整原文；320px 窗口下筛选框保持紧凑，排序框边框和箭头完整可见。
 - 🪄 任务卡片在窄窗口下会从计时文本末尾省略并保留状态前缀，省略时可悬停查看完整内容；多卡片之间保留真实 8px 间距，深浅主题下的优先级与编辑/删除浮层也采用更克制、清晰的交互配色。
 - ↕️ 待办列表使用 8px 紧凑滚动条；默认窄窗口下，滚动条与其右侧空白之和等于左侧留白，并随深浅主题切换颜色。
 - 🔔 多个任务同时到期时会汇总到一个软件内提醒窗口，可选择后批量完成或推迟，不再层层弹出；应用不会创建 Windows 系统通知，最小化或关闭到托盘时也不会显示系统气泡。
@@ -22,7 +24,7 @@
 
 - ✅ 待办事项列表采用卡片式展示，并提供完成状态、优先级、定时器等信息。
 - ✅ 已完成任务显示填充勾选图标，未完成任务改为展示空心圆，同时保留编辑按钮，随时可修改内容。
-- ✅ 添加按钮改用独立图标并保持居中，便于快速创建任务。
+- ✅ 添加按钮使用透明背景的程序化加号并保持居中，圆形背景统一由主题按钮样式控制。
 - 🔄 后续计划：继续完善提醒与筛选策略，补充更多示例数据与使用说明，并持续打磨桌面端体验。
 
 ## 目录结构
@@ -30,11 +32,13 @@
 ```
 .
 ├── main.py              # 程序入口脚本
+├── assets/fonts/        # 内置字体及其许可证
 ├── todo_app/            # 应用源码包
 │   ├── __init__.py
 │   ├── app.py           # 启动封装
 │   ├── constants.py     # 常量、颜色、路径配置
 │   ├── dialogs.py       # 任务通知及编辑对话框
+│   ├── fonts.py         # 应用字体注册与系统字体回退
 │   ├── main_window.py   # 主窗口逻辑
 │   ├── paths.py         # 基础路径与数据文件位置
 │   ├── scheduling.py    # 提醒、推迟与编辑调度规则
@@ -57,15 +61,20 @@
 
 应用会默认在根目录创建/读取 `todos.json`，并支持系统托盘、提醒、推迟等功能。界面配色会根据当前系统主题在浅色与深色方案之间自动切换，确保可读性。
 
+## 第三方字体
+
+本软件使用并随程序捆绑 **HarmonyOS Sans SC Regular** 字体。字体版权归 Huawei Device Co., Ltd. 所有，原始字体包来自[华为开发者联盟 HarmonyOS 设计资源](https://developer.huawei.com/consumer/cn/design/resource-V1/)，许可协议完整保存在 `assets/fonts/LICENSE_HarmonyOS_Sans.txt`。字体文件保持未修改，不作为独立字体产品分发；若资源缺失或 Qt 注册失败，应用会回退到操作系统通用 UI 字体。
+
 ## 打包与发布
 
 - GitHub Actions 工作流 `.github/workflows/build-exe.yml` 会在手动触发、推送到 `main` 分支或推送 `v*` 标签时，使用 PyInstaller 打包 Windows 单文件可执行程序；所有构建都会上传名称含来源与短提交 SHA、保留 7 天的临时 Actions Artifact。
+- `--add-data "assets;assets"` 会把图标与 `assets/fonts` 中的 HarmonyOS Sans SC 字体/许可证一并加入单文件构建，运行时由统一的 `resource_path` 解析开发环境与 PyInstaller `_MEIPASS` 路径。
 - 推送到 `main` 时会读取 `todo_app/constants.py` 中的 `APP_VERSION`，将 `pre` 与版本号组合成预发布标签（例如 `1.7.14` 对应 `pre1.7.14`），并创建或更新不会成为 Latest Release 的 Pre-release，其中包含 `TODOList.exe`。同一版本号下，该 `pre<版本号>` 标签可随新的 `main` 提交更新。
 - 手动运行仅上传临时 Artifact，不创建或更新任何 Release，也不修改标签；即使手动选择标签 ref，仍保持临时构建语义。
 - 推送 `v*` 标签才会创建或更新对应的正式 Release，并上传 `TODOList.exe` 作为长期正式下载入口。所有 `v*` 版本标签均由发布者显式推送且保持不可变；同一标签的工作流重跑允许覆盖该标签的同名资产以恢复失败发布。
 - 若需本地验证，可执行：
   ```bash
-  pyinstaller main.py --name TODOList --noconsole --clean -onefile --add-data "assets;assets" --hidden-import PySide6.QtSvg --hidden-import PySide6.QtMultimedia
+  pyinstaller main.py --name TODOList --noconsole --clean --onefile --add-data "assets;assets" --hidden-import PySide6.QtSvg --hidden-import PySide6.QtMultimedia
   ```
   请将 `"assets;assets"` 中的分隔符替换为当前系统要求（Windows 使用 `;`，macOS/Linux 使用 `:`）。
 - 打包版本会将 `todos.json` 存放在用户数据目录（Windows 为 `%APPDATA%\TODOList`，其他平台为 `~/.todolist/`），以避免写入只读的程序目录。
