@@ -1,6 +1,7 @@
 """自定义部件。"""
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -22,6 +23,15 @@ from .constants import (
 )
 from .utils import get_icon, truncate_text_for_width
 from .theme import ThemeColors, get_theme_manager
+
+
+_TASK_LINE_BREAKS = re.compile(r"(?:\r\n?|\n)+")
+
+
+def _single_line_task_summary(text: str) -> str:
+    """将任务换行折叠为单个空格，仅用于列表摘要显示。"""
+
+    return _TASK_LINE_BREAKS.sub(" ", text)
 
 
 def _build_action_icon(kind: str, color: str) -> QIcon:
@@ -172,7 +182,7 @@ class TodoItemWidget(QFrame):
         content_layout = QVBoxLayout(self.content_container)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(4)
-        self.task_text_label = QLabel(self.original_text)
+        self.task_text_label = QLabel(_single_line_task_summary(self.original_text))
         self.task_text_label.setWordWrap(False)
         self.task_text_label.setMinimumWidth(150)
         self.task_text_label.setSizePolicy(
@@ -360,8 +370,14 @@ class TodoItemWidget(QFrame):
         if available_width <= 0:
             return
 
+        single_line_text = _single_line_task_summary(self.original_text)
         font = self.task_text_label.font()
-        truncated_text = truncate_text_for_width(self.original_text, font, available_width, min_chars=6)
+        truncated_text = truncate_text_for_width(
+            single_line_text,
+            font,
+            available_width,
+            min_chars=6,
+        )
         self.task_text_label.setText(truncated_text)
 
         if truncated_text != self.original_text:
