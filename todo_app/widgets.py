@@ -4,8 +4,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from PySide6.QtCore import Qt, QSize, Signal, QEvent
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt, QSize, Signal, QEvent, QPointF, QRectF
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -17,13 +17,110 @@ from PySide6.QtWidgets import (
 )
 
 from .constants import (
-    DELETE_ICON_PATH,
     DONE_ICON_PATH,
-    EDIT_ICON_PATH,
     INCOMPLETE_ICON_PATH,
 )
 from .utils import get_icon, truncate_text_for_width
 from .theme import ThemeColors, get_theme_manager
+
+
+def _build_action_icon(kind: str, color: str) -> QIcon:
+    """绘制不依赖系统字体或外部资源的轻量操作图标。"""
+
+    pixmap = QPixmap(QSize(18, 18))
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(color), 2)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+
+    if kind == "edit":
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(color))
+        painter.drawPolygon(
+            QPolygonF(
+                (
+                    QPointF(5.0, 12.5),
+                    QPointF(11.5, 6.0),
+                    QPointF(14.0, 8.5),
+                    QPointF(7.5, 15.0),
+                )
+            )
+        )
+        painter.drawPolygon(
+            QPolygonF(
+                (
+                    QPointF(3.5, 16.5),
+                    QPointF(5.0, 12.5),
+                    QPointF(7.5, 15.0),
+                )
+            )
+        )
+    else:
+        painter.drawLine(QPointF(4.0, 5.5), QPointF(14.0, 5.5))
+        painter.drawLine(QPointF(7.0, 3.5), QPointF(11.0, 3.5))
+        painter.drawRoundedRect(QRectF(5.0, 6.5, 8.0, 8.5), 1.0, 1.0)
+        painter.drawLine(QPointF(8.0, 8.5), QPointF(8.0, 13.0))
+        painter.drawLine(QPointF(10.0, 8.5), QPointF(10.0, 13.0))
+
+    painter.end()
+    return QIcon(pixmap)
+
+
+class _ElidedLabel(QLabel):
+    """按实际宽度右侧省略，同时保留完整文本用于布局与提示。"""
+
+    def __init__(self, text: str = "", parent: Optional[QWidget] = None):
+        super().__init__("", parent)
+        self._full_text = ""
+        self.set_full_text(text)
+
+    @property
+    def full_text(self) -> str:
+        return self._full_text
+
+    def set_full_text(self, text: str) -> None:
+        self._full_text = text
+        self.updateGeometry()
+        self.refresh_elision()
+
+    def refresh_elision(self) -> None:
+        available_width = self.contentsRect().width()
+        displayed_text = self._full_text
+        if available_width > 0:
+            displayed_text = self.fontMetrics().elidedText(
+                self._full_text,
+                Qt.TextElideMode.ElideRight,
+                available_width,
+            )
+
+        if QLabel.text(self) != displayed_text:
+            QLabel.setText(self, displayed_text)
+        self.setToolTip(self._full_text if displayed_text != self._full_text else "")
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        size_hint = super().sizeHint()
+        if not self._full_text:
+            return size_hint
+
+        margins = self.contentsMargins()
+        full_text_width = (
+            self.fontMetrics().horizontalAdvance(self._full_text)
+            + margins.left()
+            + margins.right()
+            + (self.margin() * 2)
+        )
+        return QSize(max(size_hint.width(), full_text_width), size_hint.height())
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        size_hint = super().minimumSizeHint()
+        return QSize(self.minimumWidth(), size_hint.height())
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.refresh_elision()
 
 
 class TodoItemWidget(QFrame):
@@ -55,6 +152,7 @@ class TodoItemWidget(QFrame):
         main_layout.setSpacing(10)
 
         self.complete_button = QPushButton()
+        self.complete_button.setObjectName("TodoCompleteButton")
         self.complete_button.setCheckable(True)
         self.complete_button.setChecked(self.todo_item.get("completed", False))
         icon_path = DONE_ICON_PATH if self.todo_item.get("completed", False) else INCOMPLETE_ICON_PATH
@@ -92,7 +190,7 @@ class TodoItemWidget(QFrame):
         content_layout.addWidget(self.priority_label)
         main_layout.addWidget(self.content_container, 1)
 
-        self.timer_display_label = QLabel("无计时")
+        self.timer_display_label = _ElidedLabel("无计时")
         self.timer_display_label.setMinimumWidth(50)
         self.timer_display_label.setSizePolicy(
             QSizePolicy.Policy.Preferred,
@@ -103,25 +201,35 @@ class TodoItemWidget(QFrame):
 
         self.actions_container = QWidget(self)
         self.actions_container.setObjectName("TodoActionsContainer")
+        self.actions_container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         actions_layout = QVBoxLayout(self.actions_container)
-        actions_layout.setContentsMargins(0, 0, 0, 0)
-        actions_layout.setSpacing(5)
+        actions_layout.setContentsMargins(4, 3, 4, 3)
+        actions_layout.setSpacing(2)
 
-        self.edit_button = QPushButton(icon=get_icon(EDIT_ICON_PATH, "✎"))
+        self.edit_button = QPushButton()
+        self.edit_button.setObjectName("TodoEditButton")
         self.edit_button.setIconSize(QSize(18, 18))
         self.edit_button.setToolTip("编辑任务")
+        self.edit_button.setAccessibleName("编辑任务")
         self.edit_button.clicked.connect(self._edit_item)
 
-        self.delete_button = QPushButton(icon=get_icon(DELETE_ICON_PATH, "🗑"))
+        self.delete_button = QPushButton()
+        self.delete_button.setObjectName("TodoDeleteButton")
         self.delete_button.setIconSize(QSize(18, 18))
         self.delete_button.setToolTip("删除任务")
+        self.delete_button.setAccessibleName("删除任务")
         self.delete_button.clicked.connect(self._delete_item)
+
+        for button in (self.edit_button, self.delete_button):
+            button.setMinimumWidth(28)
+            button.setFixedHeight(26)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
 
         actions_layout.addWidget(self.edit_button)
         actions_layout.addWidget(self.delete_button)
         actions_layout.addStretch()
 
-        self.actions_container.setFixedWidth(35)
+        self.actions_container.setFixedWidth(38)
         self.actions_container.hide()
 
         self.update_timer_display(datetime.now(timezone.utc))
@@ -131,6 +239,8 @@ class TodoItemWidget(QFrame):
         """应用指定主题配色。"""
 
         self._palette = palette
+        self.edit_button.setIcon(_build_action_icon("edit", palette.action_icon))
+        self.delete_button.setIcon(_build_action_icon("delete", palette.action_icon))
         self._update_frame_background()
         is_completed = self.todo_item.get("completed", False)
         font = self.task_text_label.font()
@@ -155,23 +265,56 @@ class TodoItemWidget(QFrame):
             f"""
             QFrame#TodoItemWidget {{
                 background-color: {bg_color}; border: 1px solid {self._palette.card_border};
-                border-radius: 6px; padding: 12px; margin-bottom: 8px;
+                border-radius: 7px; padding: 12px;
             }}
             QLabel {{ background-color: transparent; }}
-            QWidget#TodoActionsContainer {{ background-color: {bg_color}; border-radius: 3px; }}
-            QPushButton {{ background-color: transparent; border: none; padding: 4px; }}
-            QPushButton:hover {{ background-color: {self._palette.action_hover_bg}; border-radius: 3px; }}
+            QWidget#TodoActionsContainer {{
+                background-color: {self._palette.action_overlay_bg};
+                border: 1px solid {self._palette.card_border};
+                border-radius: 5px;
+            }}
+            QPushButton#TodoCompleteButton {{
+                background-color: transparent; border: none; border-radius: 5px; padding: 4px;
+            }}
+            QPushButton#TodoCompleteButton:hover {{
+                background-color: {self._palette.action_edit_hover_bg};
+            }}
+            QPushButton#TodoEditButton,
+            QPushButton#TodoDeleteButton {{
+                background-color: {self._palette.action_button_bg};
+                border: 1px solid {self._palette.action_button_border};
+                border-radius: 4px;
+                padding: 0px;
+            }}
+            QPushButton#TodoEditButton:hover,
+            QPushButton#TodoEditButton:focus {{
+                background-color: {self._palette.action_edit_hover_bg};
+                border-color: {self._palette.accent};
+            }}
+            QPushButton#TodoEditButton:pressed {{
+                background-color: {self._palette.action_edit_pressed_bg};
+            }}
+            QPushButton#TodoDeleteButton:hover,
+            QPushButton#TodoDeleteButton:focus {{
+                background-color: {self._palette.action_delete_hover_bg};
+                border-color: {self._palette.due_critical};
+            }}
+            QPushButton#TodoDeleteButton:pressed {{
+                background-color: {self._palette.action_delete_pressed_bg};
+            }}
             """
         )
 
     def _priority_badge_html(self, priority: str) -> str:
         colors = {
-            "高": self._palette.priority_high,
-            "中": self._palette.priority_medium,
-            "低": self._palette.priority_low,
+            "高": (self._palette.priority_high, self._palette.priority_high_bg),
+            "中": (self._palette.priority_medium, self._palette.priority_medium_bg),
+            "低": (self._palette.priority_low, self._palette.priority_low_bg),
         }
-        background = colors.get(priority, self._palette.secondary_background)
-        text_color = self._palette.inverse_text if priority in colors else self._palette.text_primary
+        text_color, background = colors.get(
+            priority,
+            (self._palette.text_primary, self._palette.secondary_background),
+        )
         return (
             "<span style='color:{text}; background-color:{bg}; padding:2px 6px; "
             "border-radius:3px; font-size:8pt;'>{content}</span>"
@@ -190,6 +333,7 @@ class TodoItemWidget(QFrame):
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._position_actions_overlay()
+        self.timer_display_label.refresh_elision()
         self.update_text_display()
 
     def _position_actions_overlay(self) -> None:
@@ -210,6 +354,7 @@ class TodoItemWidget(QFrame):
         content_layout = self.content_container.layout()
         if content_layout is not None:
             content_layout.activate()
+        self.timer_display_label.refresh_elision()
 
         available_width = self.task_text_label.contentsRect().width()
         if available_width <= 0:
@@ -233,6 +378,9 @@ class TodoItemWidget(QFrame):
     def _delete_item(self) -> None:
         self.request_delete.emit(self.todo_item["id"])
 
+    def _set_timer_text(self, text: str) -> None:
+        self.timer_display_label.set_full_text(text)
+
     def update_timer_display(self, current_time_utc: datetime) -> None:
         is_completed = self.todo_item.get("completed", False)
         self.complete_button.setChecked(is_completed)
@@ -253,7 +401,7 @@ class TodoItemWidget(QFrame):
         )
 
         if is_completed:
-            self.timer_display_label.setText("已完成")
+            self._set_timer_text("已完成")
             self.timer_display_label.setStyleSheet(
                 f"font-size: 9pt; color: {self._palette.text_completed}; font-style: italic; {text_decoration}"
             )
@@ -265,7 +413,7 @@ class TodoItemWidget(QFrame):
             try:
                 snooze_until_dt = datetime.fromisoformat(snooze_until_str.replace("Z", "+00:00"))
                 if snooze_until_dt > current_time_utc:
-                    self.timer_display_label.setText(
+                    self._set_timer_text(
                         f"推迟: {self._format_timedelta(snooze_until_dt - current_time_utc)}"
                     )
                     self.timer_display_label.setStyleSheet(
@@ -279,7 +427,7 @@ class TodoItemWidget(QFrame):
 
         due_date_str = self.todo_item.get("dueDate")
         if not due_date_str:
-            self.timer_display_label.setText("无截止日期")
+            self._set_timer_text("无截止日期")
             self.timer_display_label.setStyleSheet(
                 f"font-size: 9pt; color: {self._palette.text_secondary};"
             )
@@ -289,20 +437,22 @@ class TodoItemWidget(QFrame):
         try:
             due_date_dt = datetime.fromisoformat(due_date_str.replace("Z", "+00:00"))
         except ValueError:
-            self.timer_display_label.setText("日期格式错误!")
-            self.timer_display_label.setStyleSheet("font-size: 9pt; color: red; font-weight: bold;")
+            self._set_timer_text("日期格式错误!")
+            self.timer_display_label.setStyleSheet(
+                f"font-size: 9pt; color: {self._palette.due_critical}; font-weight: bold;"
+            )
             self.update_text_display()
             return
 
         diff = due_date_dt - current_time_utc
         time_left_str = self._format_timedelta(diff)
         if diff.total_seconds() <= 0:
-            self.timer_display_label.setText(f"已到期 ({time_left_str.replace('-', '')})")
+            self._set_timer_text(f"已到期 ({time_left_str.replace('-', '')})")
             self.timer_display_label.setStyleSheet(
                 f"font-size: 10pt; color: {self._palette.due_critical}; font-weight: bold;"
             )
         else:
-            self.timer_display_label.setText(f"剩余: {time_left_str}")
+            self._set_timer_text(f"剩余: {time_left_str}")
             color = self._palette.due_warning if diff.total_seconds() < 86400 else self._palette.timer_positive
             self.timer_display_label.setStyleSheet(f"font-size: 9pt; color: {color}; font-weight: bold;")
 

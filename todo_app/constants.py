@@ -23,11 +23,21 @@ class ThemeColors:
     priority_high: str
     priority_medium: str
     priority_low: str
+    priority_high_bg: str
+    priority_medium_bg: str
+    priority_low_bg: str
     due_warning: str
     due_critical: str
     list_label: str
     card_border: str
-    action_hover_bg: str
+    action_overlay_bg: str
+    action_button_bg: str
+    action_button_border: str
+    action_icon: str
+    action_edit_hover_bg: str
+    action_edit_pressed_bg: str
+    action_delete_hover_bg: str
+    action_delete_pressed_bg: str
     snooze_badge: str
     timer_positive: str
     input_background: str
@@ -38,7 +48,7 @@ class ThemeColors:
 
 # --- 基本信息 ---
 APP_NAME = "桌面待办事项 v1"
-APP_VERSION = "1.7.17"
+APP_VERSION = "1.7.18"
 
 # --- 文件资源 ---
 APP_ICON_PATH = "assets/icons/app_icon.svg"
@@ -56,22 +66,32 @@ DUE_SOUND_PATH = "due.wav"
 LIGHT_THEME_COLORS = ThemeColors(
     background="#ECEFF1",
     primary_item_bg="#FFFFFF",
-    completed_item_bg="#E0E0E0",
+    completed_item_bg="#F4F6F7",
     text_primary="#263238",
     text_secondary="#546E7A",
     text_completed="#78909C",
     accent="#00796B",
     accent_hover="#004D40",
-    priority_high="#E53935",
-    priority_medium="#FFB300",
-    priority_low="#42A5F5",
+    priority_high="#B42318",
+    priority_medium="#8A4B08",
+    priority_low="#175CD3",
+    priority_high_bg="#FFF1F0",
+    priority_medium_bg="#FFF7E6",
+    priority_low_bg="#EFF6FF",
     due_warning="#EF6C00",
     due_critical="#D32F2F",
     list_label="#1A237E",
-    card_border="#CFD8DC",
-    action_hover_bg="#B0BEC5",
-    snooze_badge="#FF9800",
-    timer_positive="#2E7D32",
+    card_border="#D7E0E5",
+    action_overlay_bg="#F7F9FA",
+    action_button_bg="#FFFFFF",
+    action_button_border="#D7E0E5",
+    action_icon="#52656F",
+    action_edit_hover_bg="#E3F2EF",
+    action_edit_pressed_bg="#CBE7E2",
+    action_delete_hover_bg="#FEECEB",
+    action_delete_pressed_bg="#FAD8D5",
+    snooze_badge="#B54708",
+    timer_positive="#217A48",
     input_background="#FFFFFF",
     input_border="#B0BEC5",
     secondary_background="#FAFAFA",
@@ -81,22 +101,32 @@ LIGHT_THEME_COLORS = ThemeColors(
 DARK_THEME_COLORS = ThemeColors(
     background="#121212",
     primary_item_bg="#1E1E1E",
-    completed_item_bg="#2A2A2A",
+    completed_item_bg="#252C31",
     text_primary="#ECEFF1",
     text_secondary="#B0BEC5",
     text_completed="#90A4AE",
     accent="#26A69A",
     accent_hover="#1E857B",
-    priority_high="#EF5350",
-    priority_medium="#FFCA28",
-    priority_low="#64B5F6",
+    priority_high="#FFB4AB",
+    priority_medium="#FFD18A",
+    priority_low="#A8C7FA",
+    priority_high_bg="#3B2324",
+    priority_medium_bg="#3A3020",
+    priority_low_bg="#20324C",
     due_warning="#FFB74D",
     due_critical="#FF7043",
     list_label="#90CAF9",
-    card_border="#37474F",
-    action_hover_bg="#455A64",
-    snooze_badge="#FFB74D",
-    timer_positive="#81C784",
+    card_border="#3A474E",
+    action_overlay_bg="#242C31",
+    action_button_bg="#2B343A",
+    action_button_border="#44525A",
+    action_icon="#D3DCE1",
+    action_edit_hover_bg="#24433F",
+    action_edit_pressed_bg="#2C534C",
+    action_delete_hover_bg="#492B2C",
+    action_delete_pressed_bg="#5A3032",
+    snooze_badge="#FFB86B",
+    timer_positive="#8BD3A6",
     input_background="#263238",
     input_border="#455A64",
     secondary_background="#37474F",
