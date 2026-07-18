@@ -48,7 +48,7 @@ class ThemeColors:
 
 # --- 基本信息 ---
 APP_NAME = "桌面待办事项 v1"
-APP_VERSION = "1.7.19"
+APP_VERSION = "1.7.20"
 
 # --- 文件资源 ---
 APP_ICON_PATH = "assets/icons/app_icon.svg"
@@ -58,7 +58,9 @@ INCOMPLETE_ICON_PATH = "assets/icons/incomplete_icon.svg"
 EDIT_ICON_PATH = "assets/icons/edit_icon.svg"
 DELETE_ICON_PATH = "assets/icons/delete_icon.svg"
 SNOOZE_ICON_PATH = "assets/icons/snooze_icon.svg"
-ADD_ICON_PATH = "assets/icons/add_icon.svg"
+APP_FONT_FAMILY = "HarmonyOS Sans SC"
+APP_FONT_PATH = "assets/fonts/HarmonyOS_Sans_SC_Regular.ttf"
+APP_FONT_LICENSE_PATH = "assets/fonts/LICENSE_HarmonyOS_Sans.txt"
 REMINDER_SOUND_PATH = "reminder.wav"
 DUE_SOUND_PATH = "due.wav"
 
@@ -173,7 +175,9 @@ __all__ = [
     "EDIT_ICON_PATH",
     "DELETE_ICON_PATH",
     "SNOOZE_ICON_PATH",
-    "ADD_ICON_PATH",
+    "APP_FONT_FAMILY",
+    "APP_FONT_PATH",
+    "APP_FONT_LICENSE_PATH",
     "REMINDER_SOUND_PATH",
     "DUE_SOUND_PATH",
     "COLOR_BACKGROUND",

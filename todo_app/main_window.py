@@ -10,13 +10,14 @@ from PySide6.QtCore import (
     QByteArray,
     QEvent,
     QPointF,
+    QRect,
     QSettings,
     QTimer,
     Qt,
     QSize,
     Slot,
 )
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtMultimedia import QSoundEffect
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -44,7 +45,6 @@ from .constants import (
     APP_ICON_PATH,
     APP_NAME,
     APP_VERSION,
-    ADD_ICON_PATH,
     DUE_SOUND_PATH,
     REMINDER_SOUND_PATH,
 )
@@ -60,7 +60,6 @@ _MAIN_CONTENT_MARGIN = 15
 _LIST_SCROLLBAR_WIDTH = 8
 _LIST_RIGHT_MARGIN = _MAIN_CONTENT_MARGIN - _LIST_SCROLLBAR_WIDTH
 _TODO_CARD_GAP = 8
-_FILTER_COMBO_EXTRA_WIDTH = 26
 _SORT_COMBO_MIN_WIDTH = 76
 
 
@@ -94,6 +93,43 @@ class _ResponsiveComboBox(QComboBox):
     def minimumSizeHint(self) -> QSize:  # noqa: N802
         size_hint = super().minimumSizeHint()
         return QSize(self.minimumWidth(), size_hint.height())
+
+    def unelided_items_width(self) -> int:
+        """按当前字体与样式计算所有选项完整显示所需的最小宽度。"""
+
+        if self.count() == 0:
+            return self.sizeHint().width()
+
+        text_width = max(
+            self.fontMetrics().horizontalAdvance(self.itemText(index))
+            for index in range(self.count())
+        )
+        option = QStyleOptionComboBox()
+        QComboBox.initStyleOption(self, option)
+        height = max(self.sizeHint().height(), 1)
+
+        for candidate_width in range(text_width, text_width + 128):
+            option.rect = QRect(0, 0, candidate_width, height)
+            edit_rect = self.style().subControlRect(
+                QStyle.ComplexControl.CC_ComboBox,
+                option,
+                QStyle.SubControl.SC_ComboBoxEditField,
+                self,
+            )
+            arrow_rect = self.style().subControlRect(
+                QStyle.ComplexControl.CC_ComboBox,
+                option,
+                QStyle.SubControl.SC_ComboBoxArrow,
+                self,
+            )
+            if (
+                edit_rect.width() >= text_width
+                and arrow_rect.left() >= edit_rect.right()
+                and arrow_rect.right() < candidate_width
+            ):
+                return candidate_width
+
+        return text_width + 127
 
     def paintEvent(self, event: QEvent) -> None:  # noqa: N802
         painter = QStylePainter(self)
@@ -153,6 +189,7 @@ class ModernTodoAppWindow(QMainWindow):
         self._empty_placeholder_item: Optional[QListWidgetItem] = None
         self._empty_placeholder_widget: Optional[QWidget] = None
         self._empty_placeholder_label: Optional[QLabel] = None
+        self._syncing_todo_card_sizes = False
 
         self._build_ui()
         self._create_tray_icon()
@@ -208,7 +245,6 @@ class ModernTodoAppWindow(QMainWindow):
         self.add_button = QPushButton()
         self.add_button.setToolTip("添加新任务")
         self.add_button.setFixedSize(36, 36)
-        self.add_button.setIcon(get_icon(ADD_ICON_PATH, "+"))
         self.add_button.setIconSize(QSize(18, 18))
         self.add_button.setAccessibleName("添加任务")
         self.add_button.clicked.connect(self.show_add_task_dialog)
@@ -231,39 +267,26 @@ class ModernTodoAppWindow(QMainWindow):
         scrollbar.setFixedWidth(_LIST_SCROLLBAR_WIDTH)
         scrollbar.rangeChanged.connect(self._sync_list_scrollbar_gutter)
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.list_widget.viewport().installEventFilter(self)
         self._sync_list_scrollbar_gutter()
         main_layout.addWidget(self.list_widget, 1)
-        self._apply_global_font()
         self._apply_palette(self._palette)
-
-    def _apply_global_font(self) -> None:
-        font_family = "Segoe UI"
-        if sys.platform == "darwin":
-            font_family = "San Francisco"
-        elif sys.platform.startswith("linux"):
-            font_family = "Noto Sans"
-
-        from PySide6.QtGui import QFont
-
-        test_font = QFont(font_family, 10)
-        if QFont(test_font).family() == font_family:
-            QApplication.setFont(test_font)
-        else:
-            QApplication.setFont(QFont("Arial", 10))
 
     def _apply_palette(self, palette: ThemeColors) -> None:
         """根据主题配色刷新窗口视觉样式。"""
 
         self._palette = palette
         self.setStyleSheet(f"QMainWindow {{ background-color: {palette.background}; }}")
+        self.add_button.setIcon(self._build_add_icon(palette.inverse_text))
         self.add_button.setStyleSheet(
             f"""
             QPushButton {{
                  background-color: {palette.accent}; color: {palette.inverse_text};
                  border: none; border-radius: 18px; font-weight: bold; font-size: 16pt;
             }}
-            QPushButton:hover {{ background-color: {palette.accent_hover}; }}
-            """
+             QPushButton:hover {{ background-color: {palette.accent_hover}; }}
+             QPushButton:pressed {{ background-color: {palette.accent_hover}; }}
+             """
         )
         self.list_label.setStyleSheet(
             f"font-size: 13pt; font-weight:bold; color: {palette.list_label}; margin-top: 8px; margin-bottom: 3px;"
@@ -348,6 +371,23 @@ class ModernTodoAppWindow(QMainWindow):
             right_gutter,
             margins.bottom(),
         )
+        self._sync_todo_card_sizes()
+
+    @staticmethod
+    def _build_add_icon(color: str) -> QIcon:
+        """绘制透明背景加号，圆形背景只由按钮主题样式负责。"""
+
+        pixmap = QPixmap(QSize(18, 18))
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor(color), 2.5)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.drawLine(QPointF(4.0, 9.0), QPointF(14.0, 9.0))
+        painter.drawLine(QPointF(9.0, 4.0), QPointF(9.0, 14.0))
+        painter.end()
+        return QIcon(pixmap)
 
     def _apply_combo_palette(self, combo: Optional[QComboBox], palette: ThemeColors) -> None:
         """为筛选和排序下拉框应用主题色样式。"""
@@ -434,13 +474,8 @@ class ModernTodoAppWindow(QMainWindow):
 
         combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         if combo is self.filter_combo:
-            metrics = combo.fontMetrics()
-            max_text_width = max(
-                metrics.horizontalAdvance(combo.itemText(index))
-                for index in range(combo.count())
-            )
             combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-            combo.setFixedWidth(max_text_width + _FILTER_COMBO_EXTRA_WIDTH)
+            combo.setFixedWidth(combo.unelided_items_width())
             return
 
         combo.setMinimumWidth(_SORT_COMBO_MIN_WIDTH)
@@ -504,6 +539,8 @@ class ModernTodoAppWindow(QMainWindow):
             if original_ref:
                 item_widget.todo_item.update(original_ref)
             item_widget.update_timer_display(now_utc)
+
+        self._sync_todo_card_sizes()
 
         if items_changed:
             save_todos(self.todos)
@@ -894,6 +931,40 @@ class ModernTodoAppWindow(QMainWindow):
             self.list_widget.setItemWidget(list_item, item_widget)
             item_widget.update_timer_display(current_time_utc)
 
+        self._sync_todo_card_sizes()
+
+    def _sync_todo_card_sizes(self) -> None:
+        """按最终 viewport 宽度同步卡片与 QListWidgetItem 的动态高度。"""
+
+        if self._syncing_todo_card_sizes or not hasattr(self, "list_widget"):
+            return
+
+        viewport = self.list_widget.viewport()
+        card_width = viewport.width() - (self.list_widget.spacing() * 2)
+        if card_width <= 0:
+            return
+
+        self._syncing_todo_card_sizes = True
+        try:
+            self.list_widget.doItemsLayout()
+            changed = False
+            for index in range(self.list_widget.count()):
+                list_item = self.list_widget.item(index)
+                item_widget = self.list_widget.itemWidget(list_item)
+                if not isinstance(item_widget, TodoItemWidget):
+                    continue
+
+                item_height = item_widget.requiredHeight()
+                target_hint = QSize(0, item_height)
+                if list_item.sizeHint() != target_hint:
+                    list_item.setSizeHint(target_hint)
+                    changed = True
+
+            if changed:
+                self.list_widget.doItemsLayout()
+        finally:
+            self._syncing_todo_card_sizes = False
+
     def _show_empty_list_message(self) -> None:
         self.list_widget.clear()
         empty_item = QListWidgetItem(self.list_widget)
@@ -1116,12 +1187,23 @@ class ModernTodoAppWindow(QMainWindow):
         self._empty_placeholder_item.setSizeHint(QSize(width, height))
         self._empty_placeholder_widget.setMinimumSize(width, height)
 
+    def eventFilter(self, watched: object, event: QEvent) -> bool:  # noqa: N802
+        if (
+            hasattr(self, "list_widget")
+            and watched is self.list_widget.viewport()
+            and event.type() == QEvent.Type.Resize
+        ):
+            self._sync_todo_card_sizes()
+        return super().eventFilter(watched, event)
+
     def resizeEvent(self, event: QEvent) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._update_empty_placeholder_geometry()
+        self._sync_todo_card_sizes()
 
     def showEvent(self, event: QEvent) -> None:  # noqa: N802
         super().showEvent(event)
+        self._sync_todo_card_sizes()
         QTimer.singleShot(0, self._update_empty_placeholder_geometry)
 
     # --- 关闭流程 ---

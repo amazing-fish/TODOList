@@ -3,12 +3,11 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
 
 from PySide6.QtCore import QUrl, QSize, Qt
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtMultimedia import QSoundEffect
 from PySide6.QtWidgets import QApplication
 
@@ -18,12 +17,6 @@ from .theme import get_current_palette
 
 _warned_icon_paths: set[str] = set()
 _warned_sound_paths: set[str] = set()
-
-
-@lru_cache(maxsize=None)
-def _get_font_metrics(font: QFont) -> QFontMetrics:
-    """缓存 QFontMetrics，避免重复计算。"""
-    return QFontMetrics(font)
 
 
 def get_icon(icon_path: os.PathLike[str] | str, fallback_char: str = "●", size: QSize | None = None) -> QIcon:
@@ -81,46 +74,6 @@ def play_sound_effect(
         print("警告: QApplication 实例未找到，无法播放后备系统提示音。")
 
 
-def truncate_text_for_width(text: str, font: QFont, max_width: int, min_chars: int = 6) -> str:
-    """根据宽度截断文本，在空间允许时尽量展示至少 ``min_chars`` 个字符。"""
-    if not text:
-        return text
-
-    font_metrics = _get_font_metrics(font)
-
-    if font_metrics.horizontalAdvance(text) <= max_width:
-        return text
-
-    ellipsis = "…"
-    ellipsis_width = font_metrics.horizontalAdvance(ellipsis)
-    available_width = max_width - ellipsis_width
-    if available_width < 0:
-        return ""
-
-    preferred_min_length = min(min_chars, len(text))
-    while preferred_min_length > 0:
-        min_text = text[:preferred_min_length]
-        if font_metrics.horizontalAdvance(min_text) <= available_width:
-            break
-        preferred_min_length -= 1
-
-    left, right = preferred_min_length, len(text)
-    best_length = preferred_min_length
-
-    while left <= right:
-        mid = (left + right) // 2
-        test_text = text[:mid]
-        test_width = font_metrics.horizontalAdvance(test_text)
-
-        if test_width <= available_width:
-            best_length = mid
-            left = mid + 1
-        else:
-            right = mid - 1
-
-    return text[:best_length] + ellipsis
-
-
 def any_true(values: Iterable[bool]) -> bool:
     """判断序列中是否存在 True。"""
     return any(values)
@@ -129,6 +82,5 @@ def any_true(values: Iterable[bool]) -> bool:
 __all__ = [
     "get_icon",
     "play_sound_effect",
-    "truncate_text_for_width",
     "any_true",
 ]

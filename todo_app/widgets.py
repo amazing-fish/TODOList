@@ -1,12 +1,22 @@
 """自定义部件。"""
 from __future__ import annotations
 
-import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from PySide6.QtCore import Qt, QSize, Signal, QEvent, QPointF, QRectF
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import (
+    QAbstractTextDocumentLayout,
+    QColor,
+    QIcon,
+    QPainter,
+    QPalette,
+    QPen,
+    QPixmap,
+    QPolygonF,
+    QTextDocument,
+    QTextOption,
+)
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -21,17 +31,8 @@ from .constants import (
     DONE_ICON_PATH,
     INCOMPLETE_ICON_PATH,
 )
-from .utils import get_icon, truncate_text_for_width
+from .utils import get_icon
 from .theme import ThemeColors, get_theme_manager
-
-
-_TASK_LINE_BREAKS = re.compile(r"(?:\r\n?|\n)+")
-
-
-def _single_line_task_summary(text: str) -> str:
-    """将任务换行折叠为单个空格，仅用于列表摘要显示。"""
-
-    return _TASK_LINE_BREAKS.sub(" ", text)
 
 
 def _build_action_icon(kind: str, color: str) -> QIcon:
@@ -82,9 +83,16 @@ def _build_action_icon(kind: str, color: str) -> QIcon:
 class _ElidedLabel(QLabel):
     """按实际宽度右侧省略，同时保留完整文本用于布局与提示。"""
 
-    def __init__(self, text: str = "", parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        text: str = "",
+        parent: Optional[QWidget] = None,
+        *,
+        preserved_prefixes: tuple[str, ...] = (),
+    ):
         super().__init__("", parent)
         self._full_text = ""
+        self._preserved_prefixes = preserved_prefixes
         self.set_full_text(text)
 
     @property
@@ -105,6 +113,31 @@ class _ElidedLabel(QLabel):
                 Qt.TextElideMode.ElideRight,
                 available_width,
             )
+            if displayed_text != self._full_text:
+                for prefix in self._preserved_prefixes:
+                    if not self._full_text.startswith(prefix):
+                        continue
+                    prefix_width = self.fontMetrics().horizontalAdvance(prefix)
+                    suffix = self._full_text[len(prefix) :]
+                    suffix_text = self.fontMetrics().elidedText(
+                        suffix,
+                        Qt.TextElideMode.ElideRight,
+                        max(available_width - prefix_width, 0),
+                    )
+                    if (
+                        suffix
+                        and not suffix_text.endswith("…")
+                        and self.fontMetrics().horizontalAdvance("…")
+                        <= available_width - prefix_width
+                    ):
+                        suffix_text = "…"
+                    candidate = prefix + suffix_text
+                    if (
+                        suffix_text
+                        and self.fontMetrics().horizontalAdvance(candidate) <= available_width
+                    ):
+                        displayed_text = candidate
+                    break
 
         if QLabel.text(self) != displayed_text:
             QLabel.setText(self, displayed_text)
@@ -133,6 +166,48 @@ class _ElidedLabel(QLabel):
         self.refresh_elision()
 
 
+class _WrappingTaskLabel(QLabel):
+    """以一致的 anywhere-wrap 规则测量并绘制纯文本任务正文。"""
+
+    def _document_for_width(self, width: int) -> QTextDocument:
+        document = QTextDocument()
+        document.setDocumentMargin(0)
+        document.setDefaultFont(self.font())
+        text_option = document.defaultTextOption()
+        text_option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        document.setDefaultTextOption(text_option)
+        document.setPlainText(self.text())
+        document.setTextWidth(max(width, 1))
+        return document
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        margins = self.contentsMargins()
+        inner_width = width - margins.left() - margins.right() - (self.margin() * 2)
+        document = self._document_for_width(inner_width)
+        return int(document.size().height() + 0.999) + margins.top() + margins.bottom()
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        size_hint = super().sizeHint()
+        width = self.width() if self.width() > 0 else size_hint.width()
+        return QSize(size_hint.width(), self.heightForWidth(width))
+
+    def paintEvent(self, event: QEvent) -> None:  # noqa: N802
+        del event
+        content_rect = self.contentsRect()
+        document = self._document_for_width(content_rect.width())
+        painter = QPainter(self)
+        painter.setClipRect(content_rect)
+        painter.translate(content_rect.topLeft())
+        context = QAbstractTextDocumentLayout.PaintContext()
+        context.palette.setColor(
+            QPalette.ColorRole.Text,
+            self.palette().color(QPalette.ColorRole.WindowText),
+        )
+        context.clip = QRectF(0, 0, content_rect.width(), content_rect.height())
+        document.documentLayout().draw(painter, context)
+        painter.end()
+
+
 class TodoItemWidget(QFrame):
     """待办事项卡片。"""
 
@@ -156,6 +231,9 @@ class TodoItemWidget(QFrame):
         self.setFrameShadow(QFrame.Shadow.Raised)
         self.setObjectName("TodoItemWidget")
         self.setMinimumHeight(92)
+        card_policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        card_policy.setHeightForWidth(True)
+        self.setSizePolicy(card_policy)
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -175,22 +253,30 @@ class TodoItemWidget(QFrame):
 
         self.content_container = QWidget()
         self.content_container.setMinimumWidth(150)
-        self.content_container.setSizePolicy(
+        content_policy = QSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Preferred,
         )
+        content_policy.setHeightForWidth(True)
+        self.content_container.setSizePolicy(content_policy)
         content_layout = QVBoxLayout(self.content_container)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(4)
-        self.task_text_label = QLabel(_single_line_task_summary(self.original_text))
-        self.task_text_label.setWordWrap(False)
+        self.task_text_label = _WrappingTaskLabel(self.original_text)
+        self.task_text_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.task_text_label.setWordWrap(True)
         self.task_text_label.setMinimumWidth(150)
-        self.task_text_label.setSizePolicy(
+        text_policy = QSizePolicy(
             QSizePolicy.Policy.Ignored,
             QSizePolicy.Policy.Preferred,
         )
-        font = QFont("Segoe UI", 11)
-        font.setBold(not self.todo_item.get("completed", False))
+        text_policy.setHeightForWidth(True)
+        self.task_text_label.setSizePolicy(text_policy)
+        font = self.task_text_label.font()
+        font.setPointSize(11)
+        is_completed = self.todo_item.get("completed", False)
+        font.setBold(not is_completed)
+        font.setStrikeOut(is_completed)
         self.task_text_label.setFont(font)
 
         priority = self.todo_item.get("priority", "中")
@@ -200,7 +286,10 @@ class TodoItemWidget(QFrame):
         content_layout.addWidget(self.priority_label)
         main_layout.addWidget(self.content_container, 1)
 
-        self.timer_display_label = _ElidedLabel("无计时")
+        self.timer_display_label = _ElidedLabel(
+            "无计时",
+            preserved_prefixes=("剩余", "已到期", "推迟"),
+        )
         self.timer_display_label.setMinimumWidth(50)
         self.timer_display_label.setSizePolicy(
             QSizePolicy.Policy.Preferred,
@@ -255,6 +344,7 @@ class TodoItemWidget(QFrame):
         is_completed = self.todo_item.get("completed", False)
         font = self.task_text_label.font()
         font.setBold(not is_completed)
+        font.setStrikeOut(is_completed)
         self.task_text_label.setFont(font)
         text_decoration = "text-decoration: line-through;" if is_completed else "text-decoration: none;"
         text_color = palette.text_completed if is_completed else palette.text_primary
@@ -263,9 +353,12 @@ class TodoItemWidget(QFrame):
         self.priority_label.setText(self._priority_badge_html(self.todo_item.get("priority", "中")))
         self.priority_label.setTextFormat(Qt.TextFormat.RichText)
 
-        self.timer_display_label.setStyleSheet(
-            f"font-size: 9pt; color: {palette.text_secondary}; {text_decoration}"
-        )
+        timer_font = self.timer_display_label.font()
+        timer_font.setPointSize(9)
+        timer_font.setStrikeOut(is_completed)
+        self.timer_display_label.setFont(timer_font)
+        self.timer_display_label.setStyleSheet(f"color: {palette.text_secondary};")
+        self._update_timer_minimum_width()
         self.update_timer_display(datetime.now(timezone.utc))
 
     def _update_frame_background(self) -> None:
@@ -344,7 +437,61 @@ class TodoItemWidget(QFrame):
         super().resizeEvent(event)
         self._position_actions_overlay()
         self.timer_display_label.refresh_elision()
-        self.update_text_display()
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        layout = self.layout()
+        if layout is None:
+            return self.minimumHeight()
+
+        layout_height = layout.heightForWidth(max(width, 0))
+        if layout_height < 0:
+            layout_height = layout.sizeHint().height()
+        return max(self.minimumHeight(), layout_height)
+
+    def requiredHeight(self) -> int:  # noqa: N802
+        """根据布局后的真实正文宽度返回完整卡片高度。"""
+
+        main_layout = self.layout()
+        content_layout = self.content_container.layout()
+        if main_layout is None or content_layout is None:
+            return self.minimumHeight()
+
+        main_layout.activate()
+        content_layout.activate()
+        content_margins = content_layout.contentsMargins()
+        text_height = self.task_text_label.heightForWidth(
+            self.task_text_label.contentsRect().width()
+        )
+        priority_height = max(
+            self.priority_label.minimumHeight(),
+            self.priority_label.sizeHint().height(),
+        )
+        content_height = (
+            content_margins.top()
+            + text_height
+            + content_layout.spacing()
+            + priority_height
+            + content_margins.bottom()
+        )
+        child_height = max(
+            content_height,
+            self.complete_button.sizeHint().height(),
+            self.timer_display_label.sizeHint().height(),
+        )
+        main_margins = main_layout.contentsMargins()
+        frame_vertical_inset = max(0, self.height() - self.contentsRect().height())
+        return max(
+            self.minimumHeight(),
+            frame_vertical_inset
+            + main_margins.top()
+            + child_height
+            + main_margins.bottom(),
+        )
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        size_hint = super().sizeHint()
+        width = self.width() if self.width() > 0 else size_hint.width()
+        return QSize(size_hint.width(), self.heightForWidth(width))
 
     def _position_actions_overlay(self) -> None:
         content_rect = self.contentsRect()
@@ -358,32 +505,13 @@ class TodoItemWidget(QFrame):
         self.actions_container.raise_()
 
     def update_text_display(self) -> None:
-        layout = self.layout()
-        if layout is not None:
-            layout.activate()
-        content_layout = self.content_container.layout()
-        if content_layout is not None:
-            content_layout.activate()
+        if self.task_text_label.text() != self.original_text:
+            self.task_text_label.setText(self.original_text)
+        self.task_text_label.setToolTip("")
+        self.task_text_label.updateGeometry()
+        self.content_container.updateGeometry()
+        self.updateGeometry()
         self.timer_display_label.refresh_elision()
-
-        available_width = self.task_text_label.contentsRect().width()
-        if available_width <= 0:
-            return
-
-        single_line_text = _single_line_task_summary(self.original_text)
-        font = self.task_text_label.font()
-        truncated_text = truncate_text_for_width(
-            single_line_text,
-            font,
-            available_width,
-            min_chars=6,
-        )
-        self.task_text_label.setText(truncated_text)
-
-        if truncated_text != self.original_text:
-            self.task_text_label.setToolTip(self.original_text)
-        else:
-            self.task_text_label.setToolTip("")
 
     def _toggle_complete(self) -> None:
         self.request_toggle_complete.emit(self.todo_item["id"])
@@ -396,6 +524,13 @@ class TodoItemWidget(QFrame):
 
     def _set_timer_text(self, text: str) -> None:
         self.timer_display_label.set_full_text(text)
+
+    def _update_timer_minimum_width(self) -> None:
+        prefix_width = max(
+            self.timer_display_label.fontMetrics().horizontalAdvance(prefix + "…")
+            for prefix in ("剩余", "已到期", "推迟")
+        )
+        self.timer_display_label.setMinimumWidth(max(50, prefix_width))
 
     def update_timer_display(self, current_time_utc: datetime) -> None:
         is_completed = self.todo_item.get("completed", False)
@@ -410,17 +545,23 @@ class TodoItemWidget(QFrame):
         self.task_text_label.setStyleSheet(f"color: {text_color}; {text_decoration}")
         font = self.task_text_label.font()
         font.setBold(not is_completed)
+        font.setStrikeOut(is_completed)
         self.task_text_label.setFont(font)
+        timer_font = self.timer_display_label.font()
+        timer_font.setPointSize(9)
+        timer_font.setBold(False)
+        timer_font.setItalic(False)
+        timer_font.setStrikeOut(is_completed)
+        self.timer_display_label.setFont(timer_font)
+        self._update_timer_minimum_width()
         base_timer_color = self._palette.text_completed if is_completed else self._palette.text_secondary
-        self.timer_display_label.setStyleSheet(
-            f"font-size: 9pt; color: {base_timer_color}; {text_decoration}"
-        )
+        self.timer_display_label.setStyleSheet(f"color: {base_timer_color};")
 
         if is_completed:
             self._set_timer_text("已完成")
-            self.timer_display_label.setStyleSheet(
-                f"font-size: 9pt; color: {self._palette.text_completed}; font-style: italic; {text_decoration}"
-            )
+            timer_font.setItalic(True)
+            self.timer_display_label.setFont(timer_font)
+            self.timer_display_label.setStyleSheet(f"color: {self._palette.text_completed};")
             self.update_text_display()
             return
 
@@ -433,7 +574,7 @@ class TodoItemWidget(QFrame):
                         f"推迟: {self._format_timedelta(snooze_until_dt - current_time_utc)}"
                     )
                     self.timer_display_label.setStyleSheet(
-                        f"font-size: 9pt; color: {self._palette.snooze_badge};"
+                        f"color: {self._palette.snooze_badge};"
                     )
                     self.update_text_display()
                     return
@@ -445,7 +586,7 @@ class TodoItemWidget(QFrame):
         if not due_date_str:
             self._set_timer_text("无截止日期")
             self.timer_display_label.setStyleSheet(
-                f"font-size: 9pt; color: {self._palette.text_secondary};"
+                f"color: {self._palette.text_secondary};"
             )
             self.update_text_display()
             return
@@ -454,9 +595,9 @@ class TodoItemWidget(QFrame):
             due_date_dt = datetime.fromisoformat(due_date_str.replace("Z", "+00:00"))
         except ValueError:
             self._set_timer_text("日期格式错误!")
-            self.timer_display_label.setStyleSheet(
-                f"font-size: 9pt; color: {self._palette.due_critical}; font-weight: bold;"
-            )
+            timer_font.setBold(True)
+            self.timer_display_label.setFont(timer_font)
+            self.timer_display_label.setStyleSheet(f"color: {self._palette.due_critical};")
             self.update_text_display()
             return
 
@@ -464,13 +605,17 @@ class TodoItemWidget(QFrame):
         time_left_str = self._format_timedelta(diff)
         if diff.total_seconds() <= 0:
             self._set_timer_text(f"已到期 ({time_left_str.replace('-', '')})")
-            self.timer_display_label.setStyleSheet(
-                f"font-size: 10pt; color: {self._palette.due_critical}; font-weight: bold;"
-            )
+            timer_font.setPointSize(10)
+            timer_font.setBold(True)
+            self.timer_display_label.setFont(timer_font)
+            self._update_timer_minimum_width()
+            self.timer_display_label.setStyleSheet(f"color: {self._palette.due_critical};")
         else:
             self._set_timer_text(f"剩余: {time_left_str}")
             color = self._palette.due_warning if diff.total_seconds() < 86400 else self._palette.timer_positive
-            self.timer_display_label.setStyleSheet(f"font-size: 9pt; color: {color}; font-weight: bold;")
+            timer_font.setBold(True)
+            self.timer_display_label.setFont(timer_font)
+            self.timer_display_label.setStyleSheet(f"color: {color};")
 
         self.update_text_display()
 
