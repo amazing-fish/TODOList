@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, QPoint, QPointF  # noqa: E402
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt  # noqa: E402
 from PySide6.QtGui import QEnterEvent, QFont, QFontMetrics  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QAbstractItemView,
@@ -115,6 +115,46 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
         )
         self._assert_displayed_text_fits(widget)
 
+    def test_timer_status_full_text_is_preserved_for_supported_states(self) -> None:
+        now = datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)
+        cases = (
+            ({"completed": True, "dueDate": None}, "已完成"),
+            ({"completed": False, "dueDate": None}, "无截止日期"),
+            ({"completed": False, "dueDate": "not-a-date"}, "日期格式错误!"),
+            (
+                {
+                    "completed": False,
+                    "dueDate": None,
+                    "snoozeUntil": (now + timedelta(days=2)).isoformat(),
+                },
+                "推迟: 2天",
+            ),
+        )
+
+        for overrides, expected_text in cases:
+            with self.subTest(expected_text=expected_text):
+                todo = {
+                    "id": 1,
+                    "text": "检查计时状态",
+                    "priority": "中",
+                    "completed": False,
+                    "dueDate": None,
+                    "snoozeUntil": None,
+                    **overrides,
+                }
+                widget = TodoItemWidget(todo)
+                widget.setFixedSize(420, 110)
+                widget.show()
+                self.addCleanup(widget.close)
+
+                with patch("builtins.print"):
+                    widget.update_timer_display(now)
+                self.app.processEvents()
+
+                self.assertEqual(widget.timer_display_label.full_text, expected_text)
+                self.assertEqual(widget.timer_display_label.text(), expected_text)
+                self.assertEqual(widget.timer_display_label.toolTip(), "")
+
     def _assert_displayed_text_fits(self, widget: TodoItemWidget) -> None:
         metrics = QFontMetrics(widget.task_text_label.font())
         self.assertLessEqual(
@@ -157,6 +197,10 @@ class TodoListCardIntegrationTest(unittest.TestCase):
 
         self.assertFalse(card.edit_button.visibleRegion().isEmpty())
         self.assertFalse(card.delete_button.visibleRegion().isEmpty())
+        for button in (card.edit_button, card.delete_button):
+            self.assertGreaterEqual(button.width(), 28)
+            self.assertGreaterEqual(button.height(), 26)
+            self.assertFalse(button.icon().isNull())
         self.assertIs(
             card.childAt(
                 card.edit_button.mapTo(card, card.edit_button.rect().center())
@@ -183,6 +227,79 @@ class TodoListCardIntegrationTest(unittest.TestCase):
         self.assertEqual(
             window.list_widget.selectionMode(),
             QAbstractItemView.SelectionMode.NoSelection,
+        )
+
+    def test_narrow_timer_elides_from_right_and_preserves_status_prefix(self) -> None:
+        now = datetime.now(timezone.utc)
+        todos = [
+            {
+                "id": 1,
+                "text": "很长的未来任务名称，用于验证窄卡片计时显示",
+                "priority": "中",
+                "completed": False,
+                "dueDate": (now + timedelta(days=123_456)).isoformat(),
+                "createdAt": now.isoformat(),
+                "snoozeUntil": None,
+            },
+            {
+                "id": 2,
+                "text": "很长的逾期任务名称，用于验证窄卡片计时显示",
+                "priority": "高",
+                "completed": False,
+                "dueDate": (now - timedelta(days=123_456)).isoformat(),
+                "createdAt": now.isoformat(),
+                "snoozeUntil": None,
+            },
+        ]
+        window = self._create_window(todos=todos)
+        window.resize(320, 640)
+        window.show()
+        self.app.processEvents()
+
+        for index, prefix in enumerate(("剩余", "已到期")):
+            with self.subTest(prefix=prefix):
+                item = window.list_widget.item(index)
+                card = window.list_widget.itemWidget(item)
+                displayed_text = card.timer_display_label.text()
+                available_width = card.timer_display_label.contentsRect().width()
+
+                self.assertLessEqual(card.width(), window.list_widget.viewport().width())
+                self.assertTrue(displayed_text.startswith(prefix))
+                self.assertTrue(displayed_text.endswith("…"))
+                self.assertLessEqual(
+                    card.timer_display_label.fontMetrics().horizontalAdvance(displayed_text),
+                    available_width,
+                )
+                self.assertNotEqual(displayed_text, card.timer_display_label.full_text)
+                self.assertEqual(
+                    card.timer_display_label.toolTip(),
+                    card.timer_display_label.full_text,
+                )
+
+    def test_multiple_cards_have_real_vertical_gap_with_unpainted_background(self) -> None:
+        window = self._create_window(todo_count=2)
+        window.resize(320, 640)
+        window.show()
+        self.app.processEvents()
+
+        first_item = window.list_widget.item(0)
+        second_item = window.list_widget.item(1)
+        first_card = window.list_widget.itemWidget(first_item)
+        second_card = window.list_widget.itemWidget(second_item)
+        card_gap = second_card.geometry().top() - first_card.geometry().bottom() - 1
+
+        self.assertEqual(card_gap, window.list_widget.spacing() * 2)
+        self.assertEqual(card_gap, 8)
+        self.assertGreaterEqual(first_item.sizeHint().height(), first_card.minimumHeight())
+        self.assertGreaterEqual(second_item.sizeHint().height(), second_card.minimumHeight())
+
+        viewport_image = window.list_widget.viewport().grab().toImage()
+        sample_x = first_card.geometry().center().x()
+        card_y = first_card.geometry().top() + 5
+        gap_y = first_card.geometry().bottom() + 1 + card_gap // 2
+        self.assertNotEqual(
+            viewport_image.pixelColor(sample_x, card_y).rgba(),
+            viewport_image.pixelColor(sample_x, gap_y).rgba(),
         )
 
     def test_vertical_scrollbar_is_compact_and_right_aligned(self) -> None:
@@ -231,19 +348,25 @@ class TodoListCardIntegrationTest(unittest.TestCase):
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
         )
 
-    def _create_window(self, todo_count: int = 1) -> ModernTodoAppWindow:
-        todo = {
-            "id": 1,
-            "text": "这是一段很长很长的任务文字，用于检查窄窗口下的显示效果",
-            "priority": "中",
-            "completed": False,
-            "dueDate": (
-                datetime.now(timezone.utc) + timedelta(days=123)
-            ).isoformat(),
-            "createdAt": "2026-07-17T00:00:00+00:00",
-            "snoozeUntil": None,
-        }
-        todos = [{**todo, "id": index + 1} for index in range(todo_count)]
+    def _create_window(
+        self,
+        todo_count: int = 1,
+        *,
+        todos: list[dict] | None = None,
+    ) -> ModernTodoAppWindow:
+        if todos is None:
+            todo = {
+                "id": 1,
+                "text": "这是一段很长很长的任务文字，用于检查窄窗口下的显示效果",
+                "priority": "中",
+                "completed": False,
+                "dueDate": (
+                    datetime.now(timezone.utc) + timedelta(days=123)
+                ).isoformat(),
+                "createdAt": "2026-07-17T00:00:00+00:00",
+                "snoozeUntil": None,
+            }
+            todos = [{**todo, "id": index + 1} for index in range(todo_count)]
         load_patcher = patch("todo_app.main_window.load_todos", return_value=todos)
         load_patcher.start()
         self.addCleanup(load_patcher.stop)

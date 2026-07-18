@@ -49,6 +49,7 @@ from .theme import ThemeColors, get_theme_manager
 _MAIN_CONTENT_MARGIN = 15
 _LIST_SCROLLBAR_WIDTH = 8
 _LIST_RIGHT_MARGIN = _MAIN_CONTENT_MARGIN - _LIST_SCROLLBAR_WIDTH
+_TODO_CARD_GAP = 8
 
 
 class ModernTodoAppWindow(QMainWindow):
@@ -145,6 +146,8 @@ class ModernTodoAppWindow(QMainWindow):
 
         self.list_widget = QListWidget()
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        # QListView::spacing 会填充每个 item 四周，相邻卡片间距因此是该值的两倍。
+        self.list_widget.setSpacing(_TODO_CARD_GAP // 2)
         self.list_widget.setVerticalScrollMode(QListWidget.ScrollPerPixel)
         self.list_widget.verticalScrollBar().setFixedWidth(_LIST_SCROLLBAR_WIDTH)
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -791,7 +794,8 @@ class ModernTodoAppWindow(QMainWindow):
             item_widget.request_delete.connect(self.handle_delete_request)
             item_widget.request_toggle_complete.connect(self.handle_toggle_complete_request)
             widget_size_hint = item_widget.sizeHint()
-            list_item.setSizeHint(QSize(0, widget_size_hint.height()))
+            item_height = max(widget_size_hint.height(), item_widget.minimumHeight())
+            list_item.setSizeHint(QSize(0, item_height))
             self.list_widget.addItem(list_item)
             self.list_widget.setItemWidget(list_item, item_widget)
             item_widget.update_timer_display(current_time_utc)
