@@ -10,7 +10,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, Qt  # noqa: E402
-from PySide6.QtGui import QColor, QEnterEvent  # noqa: E402
+from PySide6.QtGui import QColor, QEnterEvent, QWheelEvent  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QAbstractItemView,
     QApplication,
@@ -250,6 +250,13 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
             multiline_widget.task_details_popup.details_label.text(),
             "第一行\n第二行",
         )
+        self.assertEqual(
+            multiline_widget.task_details_popup.scroll_area.verticalScrollBar().maximum(),
+            0,
+        )
+        non_scrollable_wheel = self._wheel_event(-120)
+        multiline_widget.task_text_label.wheelEvent(non_scrollable_wheel)
+        self.assertFalse(non_scrollable_wheel.isAccepted())
 
     def test_oversized_task_details_stays_off_card_and_scrolls(self) -> None:
         original_text = "超长任务正文需要保持完整可浏览" * 400
@@ -292,7 +299,9 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
         scrollbar = popup.scroll_area.verticalScrollBar()
         self.assertGreater(scrollbar.maximum(), 0)
         self.assertEqual(scrollbar.value(), 0)
-        popup.scroll_details(-120)
+        scrollable_wheel = self._wheel_event(-120)
+        widget.task_text_label.wheelEvent(scrollable_wheel)
+        self.assertTrue(scrollable_wheel.isAccepted())
         self.assertGreater(scrollbar.value(), 0)
 
     def test_timer_text_growth_keeps_per_line_task_visible(self) -> None:
@@ -397,6 +406,19 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
         required_height = label.heightForWidth(label.contentsRect().width())
         self.assertGreater(required_height, 0)
         self.assertGreaterEqual(label.contentsRect().height(), required_height)
+
+    @staticmethod
+    def _wheel_event(delta: int) -> QWheelEvent:
+        return QWheelEvent(
+            QPointF(1, 1),
+            QPointF(1, 1),
+            QPoint(0, 0),
+            QPoint(0, delta),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.ScrollUpdate,
+            False,
+        )
 
 
 class TodoListCardIntegrationTest(unittest.TestCase):

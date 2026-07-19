@@ -185,7 +185,7 @@ class _PerLineElidedTaskLabel(QLabel):
     details_requested = Signal()
     details_dismissed = Signal()
     details_requirement_changed = Signal(bool)
-    details_scroll_requested = Signal(int)
+    details_scroll_requested = Signal(object)
 
     def __init__(self, text: str = "", parent: Optional[QWidget] = None):
         super().__init__(text, parent)
@@ -315,9 +315,10 @@ class _PerLineElidedTaskLabel(QLabel):
 
     def wheelEvent(self, event: QEvent) -> None:  # noqa: N802
         if self.needs_details() and event.angleDelta().y():
-            self.details_scroll_requested.emit(event.angleDelta().y())
-            event.accept()
-            return
+            event.ignore()
+            self.details_scroll_requested.emit(event)
+            if event.isAccepted():
+                return
         super().wheelEvent(event)
 
 
@@ -432,14 +433,16 @@ class _TaskDetailsPopup(QFrame):
         self.scroll_area.setFixedHeight(viewport_height)
         self.setFixedHeight(viewport_height + frame_height)
 
-    def scroll_details(self, wheel_delta: int) -> None:
-        """在正文保持悬停时用滚轮浏览超长详情。"""
+    def scroll_details(self, wheel_delta: int) -> bool:
+        """滚动超长详情，并返回内容是否真的移动。"""
 
         scrollbar = self.scroll_area.verticalScrollBar()
         step = max(scrollbar.singleStep(), self.details_label.fontMetrics().lineSpacing())
         wheel_steps = max(abs(wheel_delta) // 120, 1)
         direction = -1 if wheel_delta > 0 else 1
+        previous_value = scrollbar.value()
         scrollbar.setValue(scrollbar.value() + (direction * wheel_steps * step * 3))
+        return scrollbar.value() != previous_value
 
     def apply_palette(self, palette: ThemeColors) -> None:
         """让详情浮层与当前卡片主题保持一致。"""
@@ -557,7 +560,7 @@ class TodoItemWidget(QFrame):
             self._handle_task_details_requirement
         )
         self.task_text_label.details_scroll_requested.connect(
-            self.task_details_popup.scroll_details
+            self._handle_task_details_scroll
         )
 
         priority = self.todo_item.get("priority", "中")
@@ -747,6 +750,13 @@ class TodoItemWidget(QFrame):
             self._hide_task_details()
         elif self.task_text_label.is_hovered():
             self._show_task_details()
+
+    def _handle_task_details_scroll(self, event: QEvent) -> None:
+        if (
+            self.task_details_popup.isVisible()
+            and self.task_details_popup.scroll_details(event.angleDelta().y())
+        ):
+            event.accept()
 
     def _position_task_details_popup(self) -> None:
         popup = self.task_details_popup
