@@ -54,7 +54,7 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
 
         idle_task_geometry = widget.task_text_label.geometry()
         idle_timer_geometry = widget.timer_display_label.geometry()
-        self._assert_wrapped_text_fits(widget)
+        self._assert_each_logical_line_fits(widget)
 
         widget.enterEvent(
             QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1))
@@ -65,7 +65,7 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
         self.assertTrue(widget.delete_button.isVisible())
         self.assertEqual(widget.task_text_label.geometry(), idle_task_geometry)
         self.assertEqual(widget.timer_display_label.geometry(), idle_timer_geometry)
-        self._assert_wrapped_text_fits(widget)
+        self._assert_each_logical_line_fits(widget)
 
         widget.leaveEvent(QEvent(QEvent.Type.Leave))
         self.app.processEvents()
@@ -74,8 +74,14 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
         self.assertEqual(widget.task_text_label.geometry(), idle_task_geometry)
         self.assertEqual(widget.timer_display_label.geometry(), idle_timer_geometry)
 
-    def test_task_text_preserves_line_breaks_and_wraps_inside_card(self) -> None:
-        original_text = "第一行任务\r\n第二行任务\n第三行任务"
+    def test_task_text_preserves_line_breaks_and_elides_each_logical_line(self) -> None:
+        original_text = (
+            "第一行很长的中文任务内容需要独立省略" * 3
+            + "\r\n"
+            + "第二行同样很长并且不能折成额外视觉行" * 3
+            + "\n\n"
+            + "continuousEnglishTextWithoutSpaces" * 4
+        )
         widget = TodoItemWidget(
             {
                 "id": 1,
@@ -89,13 +95,22 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
         widget.show()
         self.addCleanup(widget.close)
         self.app.processEvents()
+        widget.resize(260, widget.requiredHeight())
+        self.app.processEvents()
 
-        self.assertTrue(widget.task_text_label.wordWrap())
+        self.assertFalse(widget.task_text_label.wordWrap())
         self.assertEqual(widget.task_text_label.text(), original_text)
         self.assertEqual(widget.todo_item["text"], original_text)
-        self._assert_wrapped_text_fits(widget)
+        displayed_lines = widget.task_text_label.displayed_lines()
+        self.assertEqual(len(displayed_lines), 4)
+        self.assertTrue(displayed_lines[0].endswith("…"))
+        self.assertTrue(displayed_lines[1].endswith("…"))
+        self.assertEqual(displayed_lines[2], "")
+        self.assertTrue(displayed_lines[3].endswith("…"))
+        self.assertEqual(widget.task_text_label.toolTip(), original_text)
+        self._assert_each_logical_line_fits(widget)
 
-    def test_timer_text_growth_keeps_wrapped_task_visible(self) -> None:
+    def test_timer_text_growth_keeps_per_line_task_visible(self) -> None:
         now = datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc)
         host = QWidget()
         host_layout = QVBoxLayout(host)
@@ -122,7 +137,7 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
         self.app.processEvents()
 
         self.assertTrue(widget.timer_display_label.text().startswith("已到期"))
-        self._assert_wrapped_text_fits(widget)
+        self._assert_each_logical_line_fits(widget)
 
     def test_timer_status_full_text_is_preserved_for_supported_states(self) -> None:
         now = datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)
@@ -164,9 +179,16 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
                 self.assertEqual(widget.timer_display_label.text(), expected_text)
                 self.assertEqual(widget.timer_display_label.toolTip(), "")
 
-    def _assert_wrapped_text_fits(self, widget: TodoItemWidget) -> None:
+    def _assert_each_logical_line_fits(self, widget: TodoItemWidget) -> None:
         label = widget.task_text_label
-        self.assertTrue(label.wordWrap())
+        self.assertFalse(label.wordWrap())
+        available_width = label.contentsRect().width()
+        for displayed_line in label.displayed_lines():
+            with self.subTest(displayed_line=displayed_line):
+                self.assertLessEqual(
+                    label.fontMetrics().horizontalAdvance(displayed_line),
+                    available_width,
+                )
         required_height = label.heightForWidth(label.contentsRect().width())
         self.assertGreater(required_height, 0)
         self.assertGreaterEqual(label.contentsRect().height(), required_height)
@@ -306,6 +328,35 @@ class TodoListCardIntegrationTest(unittest.TestCase):
                     card.timer_display_label.full_text,
                 )
 
+    def test_short_task_yields_space_for_full_timer_at_minimum_window_width(self) -> None:
+        now = datetime(2026, 7, 19, 12, 0, tzinfo=timezone.utc)
+        todo = {
+            "id": 1,
+            "text": "短任务",
+            "priority": "中",
+            "completed": False,
+            "dueDate": (now + timedelta(days=123, hours=4)).isoformat(),
+            "createdAt": now.isoformat(),
+            "snoozeUntil": None,
+        }
+        window = self._create_window(todos=[todo])
+        window.resize(320, 640)
+        window.show()
+        self._settle_list_layout(window)
+
+        item = window.list_widget.item(0)
+        card = window.list_widget.itemWidget(item)
+        card.update_timer_display(now)
+        self._settle_list_layout(window)
+
+        timer = card.timer_display_label
+        self.assertEqual(timer.full_text, "剩余: 123天 4时")
+        self.assertEqual(timer.text(), timer.full_text)
+        self.assertEqual(timer.toolTip(), "")
+        self.assertLess(card.content_container.minimumWidth(), 150)
+        self.assertGreaterEqual(timer.width(), timer.sizeHint().width())
+        self.assertFalse(window.list_widget.horizontalScrollBar().isVisible())
+
     def test_multiple_cards_have_real_vertical_gap_with_unpainted_background(self) -> None:
         window = self._create_window(todo_count=2)
         window.resize(320, 640)
@@ -399,11 +450,17 @@ class TodoListCardIntegrationTest(unittest.TestCase):
                 self.assertLessEqual(abs(left_margin - right_margin), 1)
                 self.assertFalse(window.list_widget.horizontalScrollBar().isVisible())
 
-    def test_wrapped_cards_track_viewport_and_height_across_rapid_resizes(self) -> None:
+    def test_per_line_elision_tracks_viewport_across_rapid_resizes(self) -> None:
         now = datetime.now(timezone.utc)
-        multiline_text = "第一段任务内容保留开头\r\n第二段保留换行\n第三段继续显示"
-        long_chinese = "很长的中文任务内容" * 18
-        long_unbroken_english = "continuousEnglishTextWithoutSpaces" * 10
+        multiline_text = (
+            "第一段任务内容保留开头并在不足时独立省略" * 2
+            + "\r\n"
+            + "第二段保留换行并在自己的行尾省略" * 2
+            + "\n"
+            + "第三段同样只占一个视觉行" * 2
+        )
+        long_chinese = "很长的中文任务内容" * 4
+        long_unbroken_english = "continuousEnglishTextWithoutSpaces" * 2
         common_fields = {
             "priority": "中",
             "completed": False,
@@ -427,6 +484,14 @@ class TodoListCardIntegrationTest(unittest.TestCase):
         window.show()
         self._settle_list_layout(window)
         wide_heights = self._card_heights(window)
+        expected_logical_lines = [
+            text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+            for text in expected_texts
+        ]
+        for index, logical_lines in enumerate(expected_logical_lines):
+            card = window.list_widget.itemWidget(window.list_widget.item(index))
+            self.assertEqual(card.task_text_label.displayed_lines(), logical_lines)
+            self.assertEqual(card.task_text_label.toolTip(), "")
 
         for width in (640, 420, 320):
             window.resize(width, 640)
@@ -442,15 +507,29 @@ class TodoListCardIntegrationTest(unittest.TestCase):
                 self.assertEqual(label.text(), original_text)
                 self.assertEqual(card.todo_item["text"], original_text)
                 self.assertEqual(window.todos[index]["text"], original_text)
-                self.assertTrue(label.wordWrap())
+                self.assertFalse(label.wordWrap())
+                displayed_lines = label.displayed_lines()
+                self.assertEqual(len(displayed_lines), len(expected_logical_lines[index]))
+                for displayed_line in displayed_lines:
+                    self.assertLessEqual(
+                        label.fontMetrics().horizontalAdvance(displayed_line),
+                        label.contentsRect().width(),
+                    )
                 self.assertEqual(item.sizeHint().height(), card.height())
                 self.assertFalse(window.list_widget.horizontalScrollBar().isVisible())
                 required_height = label.heightForWidth(label.contentsRect().width())
                 self.assertGreaterEqual(label.contentsRect().height(), required_height)
 
-        self.assertGreater(narrow_heights[1], wide_heights[1])
-        self.assertGreater(narrow_heights[2], wide_heights[2])
+        self.assertEqual(narrow_heights, wide_heights)
         self.assertGreater(narrow_heights[0], narrow_heights[3])
+        self.assertEqual(narrow_heights[1], narrow_heights[3])
+        self.assertEqual(narrow_heights[2], narrow_heights[3])
+        for index in range(3):
+            card = window.list_widget.itemWidget(window.list_widget.item(index))
+            self.assertTrue(
+                any(line.endswith("…") for line in card.task_text_label.displayed_lines())
+            )
+            self.assertEqual(card.task_text_label.toolTip(), expected_texts[index])
         self._assert_card_gaps(window)
 
         first_card = window.list_widget.itemWidget(window.list_widget.item(0))
@@ -468,6 +547,10 @@ class TodoListCardIntegrationTest(unittest.TestCase):
             window.resize(width, 640)
         self._settle_list_layout(window)
         self.assertEqual(self._card_heights(window), wide_heights)
+        for index, logical_lines in enumerate(expected_logical_lines):
+            card = window.list_widget.itemWidget(window.list_widget.item(index))
+            self.assertEqual(card.task_text_label.displayed_lines(), logical_lines)
+            self.assertEqual(card.task_text_label.toolTip(), "")
         self._assert_card_gaps(window)
 
     def test_filter_options_are_never_elided_at_minimum_window_width(self) -> None:
