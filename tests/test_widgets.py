@@ -274,6 +274,11 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
         self.app.processEvents()
         self.assertEqual(widget.timer_display_label.text(), "剩余: 1秒")
         initial_details_required = widget.task_text_label.needs_details()
+        widget.task_text_label.enterEvent(
+            QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1))
+        )
+        self.app.processEvents()
+        self.assertFalse(widget.task_details_popup.isVisible())
 
         widget.update_timer_display(now + timedelta(days=100_000))
         self.app.processEvents()
@@ -287,6 +292,11 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
                 widget.task_text_label.natural_width(),
                 widget.task_text_label.displayed_lines(),
             ),
+        )
+        self.assertTrue(widget.task_details_popup.isVisible())
+        self.assertEqual(
+            widget.task_details_popup.details_label.text(),
+            widget.original_text,
         )
         self._assert_each_logical_line_fits(widget)
 
@@ -912,12 +922,22 @@ class TodoListCardIntegrationTest(unittest.TestCase):
 
     @classmethod
     def _settle_list_layout(cls, window: ModernTodoAppWindow) -> None:
-        cls.app.processEvents()
-        central_layout = window.centralWidget().layout()
-        central_layout.invalidate()
-        central_layout.activate()
-        window.list_widget.doItemsLayout()
-        cls.app.processEvents()
+        central_widget = window.centralWidget()
+        central_layout = central_widget.layout()
+        previous_geometry = None
+        for _ in range(5):
+            cls.app.processEvents()
+            central_layout.invalidate()
+            central_layout.activate()
+            window.list_widget.doItemsLayout()
+            cls.app.processEvents()
+            current_geometry = tuple(
+                child.geometry().getRect()
+                for child in central_widget.findChildren(QWidget)
+            )
+            if current_geometry == previous_geometry:
+                break
+            previous_geometry = current_geometry
 
     @staticmethod
     def _card_heights(window: ModernTodoAppWindow) -> list[int]:

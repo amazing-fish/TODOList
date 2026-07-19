@@ -184,6 +184,7 @@ class _PerLineElidedTaskLabel(QLabel):
     def __init__(self, text: str = "", parent: Optional[QWidget] = None):
         super().__init__(text, parent)
         self._is_elided = False
+        self._is_hovered = False
         self.setMouseTracking(True)
         self.refresh_elision()
 
@@ -213,6 +214,11 @@ class _PerLineElidedTaskLabel(QLabel):
         """返回当前几何下是否需要完整正文详情。"""
 
         return self._is_elided or len(self.logical_lines()) > 1
+
+    def is_hovered(self) -> bool:
+        """返回鼠标是否仍停留在正文区域。"""
+
+        return self._is_hovered
 
     def natural_width(self) -> int:
         metrics = self.fontMetrics()
@@ -291,11 +297,13 @@ class _PerLineElidedTaskLabel(QLabel):
         self.refresh_elision()
 
     def enterEvent(self, event: QEvent) -> None:  # noqa: N802
+        self._is_hovered = True
         if self.needs_details():
             self.details_requested.emit()
         super().enterEvent(event)
 
     def leaveEvent(self, event: QEvent) -> None:  # noqa: N802
+        self._is_hovered = False
         self.details_dismissed.emit()
         super().leaveEvent(event)
 
@@ -642,7 +650,7 @@ class TodoItemWidget(QFrame):
     def _handle_task_details_requirement(self, required: bool) -> None:
         if not required:
             self._hide_task_details()
-        elif self.task_details_popup.isVisible():
+        elif self.task_text_label.is_hovered():
             self._show_task_details()
 
     def _position_task_details_popup(self) -> None:
