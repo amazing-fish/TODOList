@@ -645,6 +645,21 @@ class TodoListCardIntegrationTest(unittest.TestCase):
                         combo,
                         palette.text_primary,
                     )
+                # grab() 会让 Qt 延迟刷新 sizeHint；重新稳定布局后再读取边界，
+                # 避免把上一主题的几何与当前主题的箭头位置混在一起。
+                self._settle_list_layout(window)
+                theme_control_bounds = [
+                    (
+                        control.mapTo(central_widget, QPoint(0, 0)).x(),
+                        control.mapTo(
+                            central_widget, QPoint(control.width(), 0)
+                        ).x(),
+                    )
+                    for control in controls
+                ]
+                for left, right in theme_control_bounds:
+                    self.assertGreaterEqual(left, controls_left)
+                    self.assertLessEqual(right, controls_right)
 
         option = QStyleOptionComboBox()
         option.initFrom(window.sort_combo)
@@ -742,7 +757,9 @@ class TodoListCardIntegrationTest(unittest.TestCase):
     @classmethod
     def _settle_list_layout(cls, window: ModernTodoAppWindow) -> None:
         cls.app.processEvents()
-        window.centralWidget().layout().activate()
+        central_layout = window.centralWidget().layout()
+        central_layout.invalidate()
+        central_layout.activate()
         window.list_widget.doItemsLayout()
         cls.app.processEvents()
 
