@@ -1,12 +1,12 @@
 """自定义部件。"""
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from PySide6.QtCore import Qt, QSize, Signal, QEvent, QPointF, QRectF
 from PySide6.QtGui import (
-    QAbstractTextDocumentLayout,
     QColor,
     QIcon,
     QPainter,
@@ -14,7 +14,6 @@ from PySide6.QtGui import (
     QPen,
     QPixmap,
     QPolygonF,
-    QTextDocument,
     QTextOption,
 )
 from PySide6.QtWidgets import (
@@ -33,6 +32,11 @@ from .constants import (
 )
 from .utils import get_icon
 from .theme import ThemeColors, get_theme_manager
+
+
+_TASK_LINE_BREAKS = re.compile(r"\r\n|\r|\n")
+_TASK_AREA_FLOOR_WIDTH = 40
+_TASK_AREA_MAX_MINIMUM_WIDTH = 150
 
 
 def _build_action_icon(kind: str, color: str) -> QIcon:
@@ -166,46 +170,101 @@ class _ElidedLabel(QLabel):
         self.refresh_elision()
 
 
-class _WrappingTaskLabel(QLabel):
-    """以一致的 anywhere-wrap 规则测量并绘制纯文本任务正文。"""
+class _PerLineElidedTaskLabel(QLabel):
+    """保留用户换行，并让每个逻辑行独立执行末尾省略。"""
 
-    def _document_for_width(self, width: int) -> QTextDocument:
-        document = QTextDocument()
-        document.setDocumentMargin(0)
-        document.setDefaultFont(self.font())
-        text_option = document.defaultTextOption()
-        text_option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
-        document.setDefaultTextOption(text_option)
-        document.setPlainText(self.text())
-        document.setTextWidth(max(width, 1))
-        return document
+    def logical_lines(self) -> list[str]:
+        return _TASK_LINE_BREAKS.split(self.text())
+
+    def _available_width(self) -> int:
+        return max(self.contentsRect().width() - (self.margin() * 2), 0)
+
+    def displayed_lines(self) -> list[str]:
+        logical_lines = self.logical_lines()
+        available_width = self._available_width()
+        if available_width <= 0:
+            return logical_lines
+
+        metrics = self.fontMetrics()
+        return [
+            metrics.elidedText(
+                line,
+                Qt.TextElideMode.ElideRight,
+                available_width,
+            )
+            for line in logical_lines
+        ]
+
+    def natural_width(self) -> int:
+        metrics = self.fontMetrics()
+        widest_line = max(
+            (metrics.horizontalAdvance(line) for line in self.logical_lines()),
+            default=0,
+        )
+        margins = self.contentsMargins()
+        return (
+            widest_line
+            + margins.left()
+            + margins.right()
+            + (self.margin() * 2)
+        )
+
+    def refresh_elision(self) -> None:
+        displayed_lines = self.displayed_lines()
+        is_elided = any(
+            displayed != original
+            for displayed, original in zip(displayed_lines, self.logical_lines())
+        )
+        self.setToolTip(self.text() if is_elided else "")
+        self.update()
 
     def heightForWidth(self, width: int) -> int:  # noqa: N802
+        del width
         margins = self.contentsMargins()
-        inner_width = width - margins.left() - margins.right() - (self.margin() * 2)
-        document = self._document_for_width(inner_width)
-        return int(document.size().height() + 0.999) + margins.top() + margins.bottom()
+        return (
+            len(self.logical_lines()) * self.fontMetrics().lineSpacing()
+            + margins.top()
+            + margins.bottom()
+            + (self.margin() * 2)
+        )
 
     def sizeHint(self) -> QSize:  # noqa: N802
-        size_hint = super().sizeHint()
-        width = self.width() if self.width() > 0 else size_hint.width()
-        return QSize(size_hint.width(), self.heightForWidth(width))
+        return QSize(self.natural_width(), self.heightForWidth(self.natural_width()))
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(0, self.heightForWidth(0))
 
     def paintEvent(self, event: QEvent) -> None:  # noqa: N802
         del event
-        content_rect = self.contentsRect()
-        document = self._document_for_width(content_rect.width())
+        content_rect = self.contentsRect().adjusted(
+            self.margin(),
+            self.margin(),
+            -self.margin(),
+            -self.margin(),
+        )
         painter = QPainter(self)
         painter.setClipRect(content_rect)
-        painter.translate(content_rect.topLeft())
-        context = QAbstractTextDocumentLayout.PaintContext()
-        context.palette.setColor(
-            QPalette.ColorRole.Text,
-            self.palette().color(QPalette.ColorRole.WindowText),
+        painter.setFont(self.font())
+        painter.setPen(self.palette().color(QPalette.ColorRole.WindowText))
+        text_option = QTextOption()
+        text_option.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
-        context.clip = QRectF(0, 0, content_rect.width(), content_rect.height())
-        document.documentLayout().draw(painter, context)
+        text_option.setWrapMode(QTextOption.WrapMode.NoWrap)
+        line_height = self.fontMetrics().lineSpacing()
+        for index, line in enumerate(self.displayed_lines()):
+            line_rect = QRectF(
+                content_rect.left(),
+                content_rect.top() + (index * line_height),
+                content_rect.width(),
+                line_height,
+            )
+            painter.drawText(line_rect, line, text_option)
         painter.end()
+
+    def resizeEvent(self, event: QEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.refresh_elision()
 
 
 class TodoItemWidget(QFrame):
@@ -252,7 +311,6 @@ class TodoItemWidget(QFrame):
         main_layout.addWidget(self.complete_button)
 
         self.content_container = QWidget()
-        self.content_container.setMinimumWidth(150)
         content_policy = QSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Preferred,
@@ -262,10 +320,9 @@ class TodoItemWidget(QFrame):
         content_layout = QVBoxLayout(self.content_container)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(4)
-        self.task_text_label = _WrappingTaskLabel(self.original_text)
+        self.task_text_label = _PerLineElidedTaskLabel(self.original_text)
         self.task_text_label.setTextFormat(Qt.TextFormat.PlainText)
-        self.task_text_label.setWordWrap(True)
-        self.task_text_label.setMinimumWidth(150)
+        self.task_text_label.setWordWrap(False)
         text_policy = QSizePolicy(
             QSizePolicy.Policy.Ignored,
             QSizePolicy.Policy.Preferred,
@@ -284,6 +341,7 @@ class TodoItemWidget(QFrame):
         self.priority_label.setTextFormat(Qt.TextFormat.RichText)
         content_layout.addWidget(self.task_text_label)
         content_layout.addWidget(self.priority_label)
+        self._update_task_area_minimum_width()
         main_layout.addWidget(self.content_container, 1)
 
         self.timer_display_label = _ElidedLabel(
@@ -507,11 +565,24 @@ class TodoItemWidget(QFrame):
     def update_text_display(self) -> None:
         if self.task_text_label.text() != self.original_text:
             self.task_text_label.setText(self.original_text)
-        self.task_text_label.setToolTip("")
+        self._update_task_area_minimum_width()
+        self.task_text_label.refresh_elision()
         self.task_text_label.updateGeometry()
         self.content_container.updateGeometry()
         self.updateGeometry()
         self.timer_display_label.refresh_elision()
+
+    def _update_task_area_minimum_width(self) -> None:
+        natural_width = max(
+            self.task_text_label.natural_width(),
+            self.priority_label.sizeHint().width(),
+        )
+        minimum_width = max(
+            _TASK_AREA_FLOOR_WIDTH,
+            min(_TASK_AREA_MAX_MINIMUM_WIDTH, natural_width),
+        )
+        self.content_container.setMinimumWidth(minimum_width)
+        self.task_text_label.setMinimumWidth(minimum_width)
 
     def _toggle_complete(self) -> None:
         self.request_toggle_complete.emit(self.todo_item["id"])
