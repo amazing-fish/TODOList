@@ -251,6 +251,50 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
             "第一行\n第二行",
         )
 
+    def test_oversized_task_details_stays_off_card_and_scrolls(self) -> None:
+        original_text = "超长任务正文需要保持完整可浏览" * 400
+        widget = TodoItemWidget(
+            {
+                "id": 1,
+                "text": original_text,
+                "priority": "高",
+                "completed": False,
+                "dueDate": None,
+            }
+        )
+        screen_geometry = widget.screen().availableGeometry()
+        widget.setFixedSize(280, 110)
+        widget.move(
+            screen_geometry.left() + 10,
+            screen_geometry.center().y() - (widget.height() // 2),
+        )
+        widget.show()
+        self.addCleanup(widget.close)
+        self.app.processEvents()
+
+        widget.enterEvent(
+            QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1))
+        )
+        widget.task_text_label.enterEvent(
+            QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1))
+        )
+        self.app.processEvents()
+
+        popup = widget.task_details_popup
+        self.assertTrue(popup.isVisible())
+        self.assertEqual(popup.details_label.text(), original_text)
+        self.assertLessEqual(popup.width(), 360)
+        self.assertLessEqual(popup.height(), screen_geometry.height())
+        self.assertTrue(screen_geometry.contains(popup.frameGeometry()))
+        card_rect = QRect(widget.mapToGlobal(QPoint(0, 0)), widget.size())
+        self.assertFalse(popup.frameGeometry().intersects(card_rect))
+
+        scrollbar = popup.scroll_area.verticalScrollBar()
+        self.assertGreater(scrollbar.maximum(), 0)
+        self.assertEqual(scrollbar.value(), 0)
+        popup.scroll_details(-120)
+        self.assertGreater(scrollbar.value(), 0)
+
     def test_timer_text_growth_keeps_per_line_task_visible(self) -> None:
         now = datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc)
         host = QWidget()

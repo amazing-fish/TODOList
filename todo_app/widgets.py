@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from PySide6.QtCore import Qt, QSize, Signal, QEvent, QPoint, QPointF, QRectF
+from PySide6.QtCore import Qt, QSize, Signal, QEvent, QPoint, QPointF, QRect, QRectF
 from PySide6.QtGui import (
     QColor,
     QIcon,
@@ -21,7 +21,9 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -40,7 +42,10 @@ _TASK_AREA_MAX_MINIMUM_WIDTH = 150
 _TASK_DETAILS_MAX_WIDTH = 360
 _TASK_DETAILS_MIN_TEXT_WIDTH = 160
 _TASK_DETAILS_HORIZONTAL_MARGIN = 12
+_TASK_DETAILS_VERTICAL_MARGIN = 10
 _TASK_DETAILS_FRAME_WIDTH = 2
+_TASK_DETAILS_GAP = 6
+_TASK_DETAILS_MIN_VERTICAL_SPACE = 120
 
 
 def _build_action_icon(kind: str, color: str) -> QIcon:
@@ -180,6 +185,7 @@ class _PerLineElidedTaskLabel(QLabel):
     details_requested = Signal()
     details_dismissed = Signal()
     details_requirement_changed = Signal(bool)
+    details_scroll_requested = Signal(int)
 
     def __init__(self, text: str = "", parent: Optional[QWidget] = None):
         super().__init__(text, parent)
@@ -307,6 +313,13 @@ class _PerLineElidedTaskLabel(QLabel):
         self.details_dismissed.emit()
         super().leaveEvent(event)
 
+    def wheelEvent(self, event: QEvent) -> None:  # noqa: N802
+        if self.needs_details() and event.angleDelta().y():
+            self.details_scroll_requested.emit(event.angleDelta().y())
+            event.accept()
+            return
+        super().wheelEvent(event)
+
 
 class _TaskDetailsPopup(QFrame):
     """不抢占焦点的纯文本任务详情浮层。"""
@@ -328,10 +341,28 @@ class _TaskDetailsPopup(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(
             _TASK_DETAILS_HORIZONTAL_MARGIN,
-            10,
+            _TASK_DETAILS_VERTICAL_MARGIN,
             _TASK_DETAILS_HORIZONTAL_MARGIN,
-            10,
+            _TASK_DETAILS_VERTICAL_MARGIN,
         )
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setObjectName("TodoTaskDetailsScrollArea")
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setWidgetResizable(False)
+        self.scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.scroll_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.scroll_area.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.scroll_area.verticalScrollBar().setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._scrollbar_reserve = max(
+            8,
+            self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent),
+        )
+        self._content_height = 0
+
         self.details_label = QLabel()
         self.details_label.setTextFormat(Qt.TextFormat.PlainText)
         self.details_label.setWordWrap(True)
@@ -342,7 +373,8 @@ class _TaskDetailsPopup(QFrame):
         self.details_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.NoTextInteraction
         )
-        layout.addWidget(self.details_label)
+        self.scroll_area.setWidget(self.details_label)
+        layout.addWidget(self.scroll_area)
         self.hide()
 
     def set_details_text(self, text: str) -> None:
@@ -353,6 +385,7 @@ class _TaskDetailsPopup(QFrame):
             _TASK_DETAILS_MAX_WIDTH
             - (_TASK_DETAILS_HORIZONTAL_MARGIN * 2)
             - _TASK_DETAILS_FRAME_WIDTH
+            - self._scrollbar_reserve
         )
         natural_width = max(
             (
@@ -367,9 +400,46 @@ class _TaskDetailsPopup(QFrame):
         )
         self.details_label.setFixedWidth(text_width)
         details_height = self.details_label.heightForWidth(text_width)
-        if details_height > 0:
-            self.details_label.setFixedHeight(details_height)
-        self.adjustSize()
+        self._content_height = max(
+            details_height,
+            self.details_label.fontMetrics().lineSpacing(),
+        )
+        self.details_label.setFixedHeight(self._content_height)
+        self.scroll_area.setFixedWidth(text_width + self._scrollbar_reserve)
+        self.setFixedWidth(
+            text_width
+            + self._scrollbar_reserve
+            + (_TASK_DETAILS_HORIZONTAL_MARGIN * 2)
+            + _TASK_DETAILS_FRAME_WIDTH
+        )
+        self.set_height_limit(
+            self._content_height
+            + (_TASK_DETAILS_VERTICAL_MARGIN * 2)
+            + _TASK_DETAILS_FRAME_WIDTH
+        )
+        self.scroll_area.verticalScrollBar().setValue(0)
+
+    def set_height_limit(self, maximum_height: int) -> None:
+        """限制外框高度，并让超出部分通过滚动视口访问。"""
+
+        frame_height = (
+            (_TASK_DETAILS_VERTICAL_MARGIN * 2) + _TASK_DETAILS_FRAME_WIDTH
+        )
+        viewport_height = min(
+            self._content_height,
+            max(maximum_height - frame_height, 1),
+        )
+        self.scroll_area.setFixedHeight(viewport_height)
+        self.setFixedHeight(viewport_height + frame_height)
+
+    def scroll_details(self, wheel_delta: int) -> None:
+        """在正文保持悬停时用滚轮浏览超长详情。"""
+
+        scrollbar = self.scroll_area.verticalScrollBar()
+        step = max(scrollbar.singleStep(), self.details_label.fontMetrics().lineSpacing())
+        wheel_steps = max(abs(wheel_delta) // 120, 1)
+        direction = -1 if wheel_delta > 0 else 1
+        scrollbar.setValue(scrollbar.value() + (direction * wheel_steps * step * 3))
 
     def apply_palette(self, palette: ThemeColors) -> None:
         """让详情浮层与当前卡片主题保持一致。"""
@@ -385,6 +455,28 @@ class _TaskDetailsPopup(QFrame):
                 color: {palette.text_primary};
                 background-color: transparent;
                 font-size: 10pt;
+            }}
+            QScrollArea#TodoTaskDetailsScrollArea {{
+                background-color: transparent;
+                border: none;
+            }}
+            QScrollBar:vertical {{
+                background-color: transparent;
+                width: 8px;
+                margin: 0px;
+            }}
+            QScrollBar::handle:vertical {{
+                background-color: {palette.input_border};
+                border-radius: 4px;
+                min-height: 20px;
+            }}
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+            QScrollBar::add-page:vertical,
+            QScrollBar::sub-page:vertical {{
+                background-color: transparent;
             }}
             """
         )
@@ -463,6 +555,9 @@ class TodoItemWidget(QFrame):
         self.task_text_label.details_dismissed.connect(self._hide_task_details)
         self.task_text_label.details_requirement_changed.connect(
             self._handle_task_details_requirement
+        )
+        self.task_text_label.details_scroll_requested.connect(
+            self.task_details_popup.scroll_details
         )
 
         priority = self.todo_item.get("priority", "中")
@@ -661,8 +756,45 @@ class TodoItemWidget(QFrame):
 
         available = screen.availableGeometry()
         task_origin = self.task_text_label.mapToGlobal(QPoint(0, 0))
-        below_card = self.mapToGlobal(QPoint(0, self.height() + 6)).y()
-        above_card = self.mapToGlobal(QPoint(0, -popup.height() - 6)).y()
+        card_rect = QRect(self.mapToGlobal(QPoint(0, 0)), self.size())
+        space_below = max(
+            available.bottom() - card_rect.bottom() - _TASK_DETAILS_GAP,
+            0,
+        )
+        space_above = max(
+            card_rect.top() - available.top() - _TASK_DETAILS_GAP,
+            0,
+        )
+        space_right = max(
+            available.right() - card_rect.right() - _TASK_DETAILS_GAP,
+            0,
+        )
+        space_left = max(
+            card_rect.left() - available.left() - _TASK_DETAILS_GAP,
+            0,
+        )
+
+        # 上下空间都过小时优先移到卡片侧面，避免详情覆盖编辑/删除区域。
+        if (
+            max(space_above, space_below) < _TASK_DETAILS_MIN_VERTICAL_SPACE
+            and max(space_left, space_right) >= popup.width()
+        ):
+            popup.set_height_limit(available.height())
+            if space_right >= popup.width():
+                popup_x = card_rect.right() + _TASK_DETAILS_GAP + 1
+            else:
+                popup_x = card_rect.left() - _TASK_DETAILS_GAP - popup.width()
+            maximum_y = max(
+                available.top(),
+                available.bottom() - popup.height() + 1,
+            )
+            popup_y = min(max(task_origin.y(), available.top()), maximum_y)
+            popup.move(popup_x, popup_y)
+            return
+
+        show_below = space_below >= space_above
+        vertical_space = space_below if show_below else space_above
+        popup.set_height_limit(vertical_space)
         maximum_x = max(
             available.left(),
             available.right() - popup.width() + 1,
@@ -671,17 +803,10 @@ class TodoItemWidget(QFrame):
             max(task_origin.x(), available.left()),
             maximum_x,
         )
-        popup_y = below_card
-        if below_card + popup.height() > available.bottom() + 1:
-            popup_y = above_card
-        maximum_y = max(
-            available.top(),
-            available.bottom() - popup.height() + 1,
-        )
-        popup_y = min(
-            max(popup_y, available.top()),
-            maximum_y,
-        )
+        if show_below:
+            popup_y = card_rect.bottom() + _TASK_DETAILS_GAP + 1
+        else:
+            popup_y = card_rect.top() - _TASK_DETAILS_GAP - popup.height()
         popup.move(popup_x, popup_y)
 
     def heightForWidth(self, width: int) -> int:  # noqa: N802
