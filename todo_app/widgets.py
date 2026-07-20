@@ -772,6 +772,11 @@ class TodoItemWidget(QFrame):
         elif self.task_details_popup.isVisible():
             self._hide_task_details()
 
+    def moveEvent(self, event: QEvent) -> None:  # noqa: N802
+        super().moveEvent(event)
+        if self.task_details_popup.isVisible():
+            self._hide_task_details()
+
     def hideEvent(self, event: QEvent) -> None:  # noqa: N802
         self._hide_task_details()
         super().hideEvent(event)

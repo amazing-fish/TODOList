@@ -1066,6 +1066,48 @@ class TodoListCardIntegrationTest(unittest.TestCase):
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
         )
 
+    def test_visible_task_details_hide_when_list_scrolls_card(self) -> None:
+        common_fields = {
+            "priority": "中",
+            "completed": False,
+            "dueDate": None,
+            "createdAt": "2026-07-17T00:00:00+00:00",
+            "snoozeUntil": None,
+        }
+        window = self._create_window(
+            todos=[
+                {
+                    **common_fields,
+                    "id": index + 1,
+                    "text": f"第 {index + 1} 个任务第一行\n第二行",
+                }
+                for index in range(10)
+            ]
+        )
+        window.resize(480, 640)
+        window.show()
+        self._settle_list_layout(window)
+
+        scrollbar = window.list_widget.verticalScrollBar()
+        self.assertGreater(scrollbar.maximum(), scrollbar.minimum())
+        item = window.list_widget.item(2)
+        card = window.list_widget.itemWidget(item)
+        card.task_text_label.enterEvent(
+            QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1))
+        )
+        self.app.processEvents()
+
+        popup = card.task_details_popup
+        self.assertTrue(popup.isVisible())
+        card_origin_before = card.mapToGlobal(QPoint(0, 0))
+
+        scrollbar.setValue(min(scrollbar.value() + 1, scrollbar.maximum()))
+        self.app.processEvents()
+
+        card_origin_after = card.mapToGlobal(QPoint(0, 0))
+        self.assertNotEqual(card_origin_after, card_origin_before)
+        self.assertFalse(popup.isVisible())
+
     @classmethod
     def _settle_list_layout(cls, window: ModernTodoAppWindow) -> None:
         central_widget = window.centralWidget()
