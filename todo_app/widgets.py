@@ -437,18 +437,41 @@ class _TaskDetailsPopup(QFrame):
             + _TASK_DETAILS_FRAME_WIDTH
         )
 
-    def set_height_limit(self, maximum_height: int) -> None:
-        """限制外框高度，并让超出部分通过滚动视口访问。"""
+    def set_height_limit(self, maximum_height: int) -> bool:
+        """限制外框高度，并返回是否仍有可显示的滚动视口。"""
 
-        frame_height = (
-            (_TASK_DETAILS_VERTICAL_MARGIN * 2) + _TASK_DETAILS_FRAME_WIDTH
-        )
-        viewport_height = min(
+        maximum_height = max(maximum_height, 0)
+        minimum_viewport_height = min(
             self._content_height,
-            max(maximum_height - frame_height, 1),
+            self.details_label.fontMetrics().lineSpacing(),
         )
+        margin_budget = max(
+            maximum_height
+            - _TASK_DETAILS_FRAME_WIDTH
+            - minimum_viewport_height,
+            0,
+        )
+        vertical_margin = min(
+            _TASK_DETAILS_VERTICAL_MARGIN,
+            margin_budget // 2,
+        )
+        frame_height = (vertical_margin * 2) + _TASK_DETAILS_FRAME_WIDTH
+        viewport_capacity = maximum_height - frame_height
+        if viewport_capacity < 1:
+            return False
+
+        layout = self.layout()
+        if layout is not None:
+            layout.setContentsMargins(
+                _TASK_DETAILS_HORIZONTAL_MARGIN,
+                vertical_margin,
+                _TASK_DETAILS_HORIZONTAL_MARGIN,
+                vertical_margin,
+            )
+        viewport_height = min(self._content_height, viewport_capacity)
         self.scroll_area.setFixedHeight(viewport_height)
         self.setFixedHeight(viewport_height + frame_height)
+        return True
 
     def scroll_details(self, wheel_delta: int) -> bool:
         """滚动超长详情，并返回内容是否真的移动。"""
@@ -741,11 +764,13 @@ class TodoItemWidget(QFrame):
         super().resizeEvent(event)
         self._position_actions_overlay()
         self.timer_display_label.refresh_elision()
-        if self.task_details_popup.isVisible():
-            if self.task_text_label.needs_details():
-                self._position_task_details_popup()
-            else:
-                self._hide_task_details()
+        if (
+            self.task_text_label.is_hovered()
+            and self.task_text_label.needs_details()
+        ):
+            self._show_task_details()
+        elif self.task_details_popup.isVisible():
+            self._hide_task_details()
 
     def hideEvent(self, event: QEvent) -> None:  # noqa: N802
         self._hide_task_details()
@@ -755,7 +780,9 @@ class TodoItemWidget(QFrame):
         if not self.task_text_label.needs_details():
             return
         self.task_details_popup.set_details_text(self.original_text)
-        self._position_task_details_popup()
+        if not self._position_task_details_popup():
+            self._hide_task_details()
+            return
         self.task_details_popup.show()
         self.task_details_popup.raise_()
 
@@ -775,11 +802,11 @@ class TodoItemWidget(QFrame):
         ):
             event.accept()
 
-    def _position_task_details_popup(self) -> None:
+    def _position_task_details_popup(self) -> bool:
         popup = self.task_details_popup
         screen = self.screen()
         if screen is None:
-            return
+            return False
 
         available = screen.availableGeometry()
         popup.set_width_limit(available.width())
@@ -807,7 +834,8 @@ class TodoItemWidget(QFrame):
             max(space_above, space_below) < _TASK_DETAILS_MIN_VERTICAL_SPACE
             and max(space_left, space_right) >= popup.width()
         ):
-            popup.set_height_limit(available.height())
+            if not popup.set_height_limit(available.height()):
+                return False
             if space_right >= popup.width():
                 popup_x = card_rect.right() + _TASK_DETAILS_GAP + 1
             else:
@@ -818,11 +846,12 @@ class TodoItemWidget(QFrame):
             )
             popup_y = min(max(task_origin.y(), available.top()), maximum_y)
             popup.move(popup_x, popup_y)
-            return
+            return True
 
         show_below = space_below >= space_above
         vertical_space = space_below if show_below else space_above
-        popup.set_height_limit(vertical_space)
+        if not popup.set_height_limit(vertical_space):
+            return False
         maximum_x = max(
             available.left(),
             available.right() - popup.width() + 1,
@@ -836,6 +865,7 @@ class TodoItemWidget(QFrame):
         else:
             popup_y = card_rect.top() - _TASK_DETAILS_GAP - popup.height()
         popup.move(popup_x, popup_y)
+        return True
 
     def heightForWidth(self, width: int) -> int:  # noqa: N802
         layout = self.layout()

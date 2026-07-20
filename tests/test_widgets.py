@@ -343,6 +343,47 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
                 0,
             )
 
+    def test_task_details_popup_fits_tight_vertical_space(self) -> None:
+        original_text = "极小纵向空间中的详情仍需保持在屏幕内" * 80
+        widget = TodoItemWidget(
+            {
+                "id": 1,
+                "text": original_text,
+                "priority": "高",
+                "completed": False,
+                "dueDate": None,
+            }
+        )
+        widget.setFixedSize(280, 110)
+        widget.move(20, 27)
+        widget.show()
+        self.addCleanup(widget.close)
+        self.app.processEvents()
+
+        card_rect = QRect(widget.mapToGlobal(QPoint(0, 0)), widget.size())
+        tight_available = QRect(
+            card_rect.left() - 20,
+            card_rect.top() - 27,
+            320,
+            160,
+        )
+        with patch.object(widget, "screen") as screen:
+            screen.return_value.availableGeometry.return_value = tight_available
+            widget.task_text_label.enterEvent(
+                QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1))
+            )
+            self.app.processEvents()
+
+            popup = widget.task_details_popup
+            self.assertTrue(popup.isVisible())
+            self.assertTrue(tight_available.contains(popup.frameGeometry()))
+            self.assertFalse(popup.frameGeometry().intersects(card_rect))
+            self.assertGreater(popup.scroll_area.viewport().height(), 0)
+            self.assertGreater(
+                popup.scroll_area.verticalScrollBar().maximum(),
+                0,
+            )
+
     def test_timer_text_growth_keeps_per_line_task_visible(self) -> None:
         now = datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc)
         host = QWidget()
