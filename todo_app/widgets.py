@@ -382,8 +382,23 @@ class _TaskDetailsPopup(QFrame):
         """保留原文并按最大宽度计算紧凑的自动换行尺寸。"""
 
         self.details_label.setText(text)
+        self.set_width_limit(_TASK_DETAILS_MAX_WIDTH)
+        self.scroll_area.verticalScrollBar().setValue(0)
+
+    def set_width_limit(self, maximum_width: int) -> None:
+        """限制外框宽度，并按实际文字宽度重新计算换行高度。"""
+
+        horizontal_overhead = (
+            (_TASK_DETAILS_HORIZONTAL_MARGIN * 2)
+            + _TASK_DETAILS_FRAME_WIDTH
+            + self._scrollbar_reserve
+        )
+        popup_width_limit = min(
+            max(maximum_width, horizontal_overhead + 1),
+            _TASK_DETAILS_MAX_WIDTH,
+        )
         max_text_width = (
-            _TASK_DETAILS_MAX_WIDTH
+            popup_width_limit
             - (_TASK_DETAILS_HORIZONTAL_MARGIN * 2)
             - _TASK_DETAILS_FRAME_WIDTH
             - self._scrollbar_reserve
@@ -391,12 +406,15 @@ class _TaskDetailsPopup(QFrame):
         natural_width = max(
             (
                 self.details_label.fontMetrics().horizontalAdvance(line)
-                for line in _TASK_LINE_BREAKS.split(text)
+                for line in _TASK_LINE_BREAKS.split(self.details_label.text())
             ),
             default=0,
         )
         text_width = min(
-            max(natural_width, _TASK_DETAILS_MIN_TEXT_WIDTH),
+            max(
+                natural_width,
+                min(_TASK_DETAILS_MIN_TEXT_WIDTH, max_text_width),
+            ),
             max_text_width,
         )
         self.details_label.setFixedWidth(text_width)
@@ -418,7 +436,6 @@ class _TaskDetailsPopup(QFrame):
             + (_TASK_DETAILS_VERTICAL_MARGIN * 2)
             + _TASK_DETAILS_FRAME_WIDTH
         )
-        self.scroll_area.verticalScrollBar().setValue(0)
 
     def set_height_limit(self, maximum_height: int) -> None:
         """限制外框高度，并让超出部分通过滚动视口访问。"""
@@ -765,6 +782,7 @@ class TodoItemWidget(QFrame):
             return
 
         available = screen.availableGeometry()
+        popup.set_width_limit(available.width())
         task_origin = self.task_text_label.mapToGlobal(QPoint(0, 0))
         card_rect = QRect(self.mapToGlobal(QPoint(0, 0)), self.size())
         space_below = max(

@@ -304,6 +304,45 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
         self.assertTrue(scrollable_wheel.isAccepted())
         self.assertGreater(scrollbar.value(), 0)
 
+    def test_task_details_popup_reflows_to_narrow_available_width(self) -> None:
+        original_text = "窄屏详情必须在屏幕内重新换行并保持完整可滚动" * 80
+        widget = TodoItemWidget(
+            {
+                "id": 1,
+                "text": original_text,
+                "priority": "中",
+                "completed": False,
+                "dueDate": None,
+            }
+        )
+        widget.setFixedSize(280, 110)
+        widget.move(10, 245)
+        widget.show()
+        self.addCleanup(widget.close)
+        self.app.processEvents()
+
+        narrow_available = QRect(0, 0, 320, 600)
+        with patch.object(widget, "screen") as screen:
+            screen.return_value.availableGeometry.return_value = narrow_available
+            widget.task_text_label.enterEvent(
+                QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1))
+            )
+            self.app.processEvents()
+
+            popup = widget.task_details_popup
+            self.assertTrue(popup.isVisible())
+            self.assertLessEqual(popup.width(), narrow_available.width())
+            self.assertTrue(narrow_available.contains(popup.frameGeometry()))
+            self.assertEqual(popup.details_label.text(), original_text)
+            self.assertEqual(
+                popup.details_label.height(),
+                popup.details_label.heightForWidth(popup.details_label.width()),
+            )
+            self.assertGreater(
+                popup.scroll_area.verticalScrollBar().maximum(),
+                0,
+            )
+
     def test_timer_text_growth_keeps_per_line_task_visible(self) -> None:
         now = datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc)
         host = QWidget()
