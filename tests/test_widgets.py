@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, Qt  # noqa: E402
-from PySide6.QtGui import QColor, QEnterEvent  # noqa: E402
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, Qt  # noqa: E402
+from PySide6.QtGui import QColor, QEnterEvent, QWheelEvent  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QAbstractItemView,
     QApplication,
@@ -107,8 +107,282 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
         self.assertTrue(displayed_lines[1].endswith("…"))
         self.assertEqual(displayed_lines[2], "")
         self.assertTrue(displayed_lines[3].endswith("…"))
-        self.assertEqual(widget.task_text_label.toolTip(), original_text)
+        self.assertEqual(widget.task_text_label.toolTip(), "")
+        self.assertTrue(widget.task_text_label.needs_details())
         self._assert_each_logical_line_fits(widget)
+
+    def test_task_details_popup_preserves_plain_text_without_stealing_focus(self) -> None:
+        original_text = (
+            "第一行包含 <b>标签</b>、& 符号和引号 \"内容\""
+            "，并且足够长以验证自动换行"
+            "\n第二行保持原始换行"
+        )
+        host = QWidget()
+        host_layout = QVBoxLayout(host)
+        widget = TodoItemWidget(
+            {
+                "id": 1,
+                "text": original_text,
+                "priority": "中",
+                "completed": False,
+                "dueDate": None,
+            }
+        )
+        widget.setFixedSize(280, widget.requiredHeight())
+        host_layout.addWidget(widget)
+        host.setFixedSize(302, widget.height() + 22)
+        host.show()
+        self.addCleanup(host.close)
+        self.app.processEvents()
+
+        widget.enterEvent(
+            QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1))
+        )
+        card_size = widget.size()
+        task_geometry = widget.task_text_label.geometry()
+        timer_geometry = widget.timer_display_label.geometry()
+        widget.complete_button.setFocus()
+        focused_widget = self.app.focusWidget()
+        self.assertIs(focused_widget, widget.complete_button)
+        widget.task_text_label.enterEvent(
+            QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1))
+        )
+        self.app.processEvents()
+
+        popup = widget.task_details_popup
+        self.assertTrue(popup.isVisible())
+        self.assertEqual(popup.details_label.text(), original_text)
+        self.assertEqual(popup.details_label.textFormat(), Qt.TextFormat.PlainText)
+        self.assertTrue(popup.details_label.wordWrap())
+        self.assertLessEqual(popup.width(), 360)
+        self.assertTrue(
+            popup.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus
+        )
+        self.assertEqual(self.app.focusWidget(), focused_widget)
+        self.assertEqual(widget.task_text_label.toolTip(), "")
+        self.assertEqual(widget.size(), card_size)
+        self.assertEqual(widget.task_text_label.geometry(), task_geometry)
+        self.assertEqual(widget.timer_display_label.geometry(), timer_geometry)
+
+        actions_top_left = widget.actions_container.mapToGlobal(QPoint(0, 0))
+        actions_rect = QRect(actions_top_left, widget.actions_container.size())
+        self.assertFalse(popup.frameGeometry().intersects(actions_rect))
+
+        widget.task_text_label.leaveEvent(QEvent(QEvent.Type.Leave))
+        self.app.processEvents()
+        self.assertFalse(popup.isVisible())
+
+    def test_task_details_requirement_tracks_elision_multiline_and_theme(self) -> None:
+        long_text = "continuousEnglishTextWithoutSpaces" * 2
+        widget = TodoItemWidget(
+            {
+                "id": 1,
+                "text": long_text,
+                "priority": "中",
+                "completed": False,
+                "dueDate": None,
+            }
+        )
+        widget.setFixedHeight(110)
+        widget.resize(260, 110)
+        widget.show()
+        self.addCleanup(widget.close)
+        self.app.processEvents()
+
+        self.assertTrue(widget.task_text_label.needs_details())
+        widget.resize(900, 110)
+        widget.layout().invalidate()
+        widget.layout().activate()
+        self.app.processEvents()
+        self.assertFalse(
+            widget.task_text_label.needs_details(),
+            (
+                widget.task_text_label.width(),
+                widget.task_text_label.natural_width(),
+                widget.task_text_label.displayed_lines(),
+            ),
+        )
+
+        short_widget = TodoItemWidget(
+            {
+                "id": 2,
+                "text": "短任务",
+                "priority": "低",
+                "completed": False,
+                "dueDate": None,
+            }
+        )
+        short_widget.setFixedSize(420, 110)
+        short_widget.show()
+        self.addCleanup(short_widget.close)
+        self.app.processEvents()
+        short_widget.task_text_label.enterEvent(
+            QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1))
+        )
+        self.app.processEvents()
+        self.assertFalse(short_widget.task_details_popup.isVisible())
+
+        multiline_widget = TodoItemWidget(
+            {
+                "id": 3,
+                "text": "第一行\n第二行",
+                "priority": "高",
+                "completed": False,
+                "dueDate": None,
+            },
+            palette=LIGHT_THEME_COLORS,
+        )
+        multiline_widget.setFixedSize(900, multiline_widget.requiredHeight())
+        multiline_widget.show()
+        self.addCleanup(multiline_widget.close)
+        self.app.processEvents()
+        self.assertTrue(multiline_widget.task_text_label.needs_details())
+
+        multiline_widget.apply_palette(DARK_THEME_COLORS)
+        multiline_widget.task_text_label.enterEvent(
+            QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1))
+        )
+        self.app.processEvents()
+        popup_style = multiline_widget.task_details_popup.styleSheet()
+        self.assertIn(DARK_THEME_COLORS.primary_item_bg, popup_style)
+        self.assertIn(DARK_THEME_COLORS.text_primary, popup_style)
+        self.assertEqual(
+            multiline_widget.task_details_popup.details_label.text(),
+            "第一行\n第二行",
+        )
+        self.assertEqual(
+            multiline_widget.task_details_popup.scroll_area.verticalScrollBar().maximum(),
+            0,
+        )
+        non_scrollable_wheel = self._wheel_event(-120)
+        multiline_widget.task_text_label.wheelEvent(non_scrollable_wheel)
+        self.assertFalse(non_scrollable_wheel.isAccepted())
+
+    def test_oversized_task_details_stays_off_card_and_scrolls(self) -> None:
+        original_text = "超长任务正文需要保持完整可浏览" * 400
+        widget = TodoItemWidget(
+            {
+                "id": 1,
+                "text": original_text,
+                "priority": "高",
+                "completed": False,
+                "dueDate": None,
+            }
+        )
+        screen_geometry = widget.screen().availableGeometry()
+        widget.setFixedSize(280, 110)
+        widget.move(
+            screen_geometry.left() + 10,
+            screen_geometry.center().y() - (widget.height() // 2),
+        )
+        widget.show()
+        self.addCleanup(widget.close)
+        self.app.processEvents()
+
+        widget.enterEvent(
+            QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1))
+        )
+        widget.task_text_label.enterEvent(
+            QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1))
+        )
+        self.app.processEvents()
+
+        popup = widget.task_details_popup
+        self.assertTrue(popup.isVisible())
+        self.assertEqual(popup.details_label.text(), original_text)
+        self.assertLessEqual(popup.width(), 360)
+        self.assertLessEqual(popup.height(), screen_geometry.height())
+        self.assertTrue(screen_geometry.contains(popup.frameGeometry()))
+        card_rect = QRect(widget.mapToGlobal(QPoint(0, 0)), widget.size())
+        self.assertFalse(popup.frameGeometry().intersects(card_rect))
+
+        scrollbar = popup.scroll_area.verticalScrollBar()
+        self.assertGreater(scrollbar.maximum(), 0)
+        self.assertEqual(scrollbar.value(), 0)
+        scrollable_wheel = self._wheel_event(-120)
+        widget.task_text_label.wheelEvent(scrollable_wheel)
+        self.assertTrue(scrollable_wheel.isAccepted())
+        self.assertGreater(scrollbar.value(), 0)
+
+    def test_task_details_popup_reflows_to_narrow_available_width(self) -> None:
+        original_text = "窄屏详情必须在屏幕内重新换行并保持完整可滚动" * 80
+        widget = TodoItemWidget(
+            {
+                "id": 1,
+                "text": original_text,
+                "priority": "中",
+                "completed": False,
+                "dueDate": None,
+            }
+        )
+        widget.setFixedSize(280, 110)
+        widget.move(10, 245)
+        widget.show()
+        self.addCleanup(widget.close)
+        self.app.processEvents()
+
+        narrow_available = QRect(0, 0, 320, 600)
+        with patch.object(widget, "screen") as screen:
+            screen.return_value.availableGeometry.return_value = narrow_available
+            widget.task_text_label.enterEvent(
+                QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1))
+            )
+            self.app.processEvents()
+
+            popup = widget.task_details_popup
+            self.assertTrue(popup.isVisible())
+            self.assertLessEqual(popup.width(), narrow_available.width())
+            self.assertTrue(narrow_available.contains(popup.frameGeometry()))
+            self.assertEqual(popup.details_label.text(), original_text)
+            self.assertEqual(
+                popup.details_label.height(),
+                popup.details_label.heightForWidth(popup.details_label.width()),
+            )
+            self.assertGreater(
+                popup.scroll_area.verticalScrollBar().maximum(),
+                0,
+            )
+
+    def test_task_details_popup_fits_tight_vertical_space(self) -> None:
+        original_text = "极小纵向空间中的详情仍需保持在屏幕内" * 80
+        widget = TodoItemWidget(
+            {
+                "id": 1,
+                "text": original_text,
+                "priority": "高",
+                "completed": False,
+                "dueDate": None,
+            }
+        )
+        widget.setFixedSize(280, 110)
+        widget.move(20, 27)
+        widget.show()
+        self.addCleanup(widget.close)
+        self.app.processEvents()
+
+        card_rect = QRect(widget.mapToGlobal(QPoint(0, 0)), widget.size())
+        tight_available = QRect(
+            card_rect.left() - 20,
+            card_rect.top() - 27,
+            320,
+            160,
+        )
+        with patch.object(widget, "screen") as screen:
+            screen.return_value.availableGeometry.return_value = tight_available
+            widget.task_text_label.enterEvent(
+                QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1))
+            )
+            self.app.processEvents()
+
+            popup = widget.task_details_popup
+            self.assertTrue(popup.isVisible())
+            self.assertTrue(tight_available.contains(popup.frameGeometry()))
+            self.assertFalse(popup.frameGeometry().intersects(card_rect))
+            self.assertGreater(popup.scroll_area.viewport().height(), 0)
+            self.assertGreater(
+                popup.scroll_area.verticalScrollBar().maximum(),
+                0,
+            )
 
     def test_timer_text_growth_keeps_per_line_task_visible(self) -> None:
         now = datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc)
@@ -132,11 +406,31 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
         widget.update_timer_display(now)
         self.app.processEvents()
         self.assertEqual(widget.timer_display_label.text(), "剩余: 1秒")
+        initial_details_required = widget.task_text_label.needs_details()
+        widget.task_text_label.enterEvent(
+            QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1))
+        )
+        self.app.processEvents()
+        self.assertFalse(widget.task_details_popup.isVisible())
 
         widget.update_timer_display(now + timedelta(days=100_000))
         self.app.processEvents()
 
         self.assertTrue(widget.timer_display_label.text().startswith("已到期"))
+        self.assertEqual(
+            (initial_details_required, widget.task_text_label.needs_details()),
+            (False, True),
+            (
+                widget.task_text_label.width(),
+                widget.task_text_label.natural_width(),
+                widget.task_text_label.displayed_lines(),
+            ),
+        )
+        self.assertTrue(widget.task_details_popup.isVisible())
+        self.assertEqual(
+            widget.task_details_popup.details_label.text(),
+            widget.original_text,
+        )
         self._assert_each_logical_line_fits(widget)
 
     def test_timer_status_full_text_is_preserved_for_supported_states(self) -> None:
@@ -192,6 +486,19 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
         required_height = label.heightForWidth(label.contentsRect().width())
         self.assertGreater(required_height, 0)
         self.assertGreaterEqual(label.contentsRect().height(), required_height)
+
+    @staticmethod
+    def _wheel_event(delta: int) -> QWheelEvent:
+        return QWheelEvent(
+            QPointF(1, 1),
+            QPointF(1, 1),
+            QPoint(0, 0),
+            QPoint(0, delta),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.ScrollUpdate,
+            False,
+        )
 
 
 class TodoListCardIntegrationTest(unittest.TestCase):
@@ -529,7 +836,8 @@ class TodoListCardIntegrationTest(unittest.TestCase):
             self.assertTrue(
                 any(line.endswith("…") for line in card.task_text_label.displayed_lines())
             )
-            self.assertEqual(card.task_text_label.toolTip(), expected_texts[index])
+            self.assertEqual(card.task_text_label.toolTip(), "")
+            self.assertTrue(card.task_text_label.needs_details())
         self._assert_card_gaps(window)
 
         first_card = window.list_widget.itemWidget(window.list_widget.item(0))
@@ -551,6 +859,10 @@ class TodoListCardIntegrationTest(unittest.TestCase):
             card = window.list_widget.itemWidget(window.list_widget.item(index))
             self.assertEqual(card.task_text_label.displayed_lines(), logical_lines)
             self.assertEqual(card.task_text_label.toolTip(), "")
+            self.assertEqual(
+                card.task_text_label.needs_details(),
+                len(logical_lines) > 1,
+            )
         self._assert_card_gaps(window)
 
     def test_filter_options_are_never_elided_at_minimum_window_width(self) -> None:
@@ -754,14 +1066,66 @@ class TodoListCardIntegrationTest(unittest.TestCase):
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
         )
 
+    def test_visible_task_details_hide_when_list_scrolls_card(self) -> None:
+        common_fields = {
+            "priority": "中",
+            "completed": False,
+            "dueDate": None,
+            "createdAt": "2026-07-17T00:00:00+00:00",
+            "snoozeUntil": None,
+        }
+        window = self._create_window(
+            todos=[
+                {
+                    **common_fields,
+                    "id": index + 1,
+                    "text": f"第 {index + 1} 个任务第一行\n第二行",
+                }
+                for index in range(10)
+            ]
+        )
+        window.resize(480, 640)
+        window.show()
+        self._settle_list_layout(window)
+
+        scrollbar = window.list_widget.verticalScrollBar()
+        self.assertGreater(scrollbar.maximum(), scrollbar.minimum())
+        item = window.list_widget.item(2)
+        card = window.list_widget.itemWidget(item)
+        card.task_text_label.enterEvent(
+            QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1))
+        )
+        self.app.processEvents()
+
+        popup = card.task_details_popup
+        self.assertTrue(popup.isVisible())
+        card_origin_before = card.mapToGlobal(QPoint(0, 0))
+
+        scrollbar.setValue(min(scrollbar.value() + 1, scrollbar.maximum()))
+        self.app.processEvents()
+
+        card_origin_after = card.mapToGlobal(QPoint(0, 0))
+        self.assertNotEqual(card_origin_after, card_origin_before)
+        self.assertFalse(popup.isVisible())
+
     @classmethod
     def _settle_list_layout(cls, window: ModernTodoAppWindow) -> None:
-        cls.app.processEvents()
-        central_layout = window.centralWidget().layout()
-        central_layout.invalidate()
-        central_layout.activate()
-        window.list_widget.doItemsLayout()
-        cls.app.processEvents()
+        central_widget = window.centralWidget()
+        central_layout = central_widget.layout()
+        previous_geometry = None
+        for _ in range(5):
+            cls.app.processEvents()
+            central_layout.invalidate()
+            central_layout.activate()
+            window.list_widget.doItemsLayout()
+            cls.app.processEvents()
+            current_geometry = tuple(
+                child.geometry().getRect()
+                for child in central_widget.findChildren(QWidget)
+            )
+            if current_geometry == previous_geometry:
+                break
+            previous_geometry = current_geometry
 
     @staticmethod
     def _card_heights(window: ModernTodoAppWindow) -> list[int]:
