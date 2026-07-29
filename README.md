@@ -52,7 +52,7 @@
 
 1. 安装依赖：
    ```bash
-   pip install PySide6
+   python -m pip install -r requirements.txt
    ```
 2. 运行应用：
    ```bash
@@ -67,6 +67,8 @@
 
 ## 打包与发布
 
+- `requirements.txt` 以精确版本提供应用运行依赖；需要本地打包时执行 `python -m pip install -r requirements-dev.txt`，该文件会同时安装运行依赖与锁定版本的 PyInstaller。
+- GitHub Actions 工作流 `.github/workflows/tests.yml` 会在所有 pull request 以及推送到 `main` 时，使用 Python 3.11 和 Qt offscreen 环境依次执行 `python -m compileall todo_app` 与 `python -m unittest discover -s tests -v`。
 - GitHub Actions 工作流 `.github/workflows/build-exe.yml` 会在手动触发、推送到 `main` 分支或推送 `v*` 标签时，使用 PyInstaller 打包 Windows 单文件可执行程序；所有构建都会上传名称含来源与短提交 SHA、保留 7 天的临时 Actions Artifact。
 - `--add-data "assets;assets"` 会把图标与 `assets/fonts` 中的 HarmonyOS Sans SC 字体/许可证一并加入单文件构建，运行时由统一的 `resource_path` 解析开发环境与 PyInstaller `_MEIPASS` 路径。
 - 推送到 `main` 时会读取 `todo_app/constants.py` 中的 `APP_VERSION`，将 `pre` 与版本号组合成预发布标签（例如 `1.7.14` 对应 `pre1.7.14`），并创建或更新不会成为 Latest Release 的 Pre-release，其中包含 `TODOList.exe`。同一版本号下，该 `pre<版本号>` 标签可随新的 `main` 提交更新。
