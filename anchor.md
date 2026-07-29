@@ -6,8 +6,8 @@
 ## 项目速览
 - **定位**：基于 PySide6 的桌面待办事项管理工具，强调现代化视觉、提醒/延迟机制与轻量本地存储。
 - **入口**：`main.py` 调用 `todo_app.run()`，由 `ModernTodoAppWindow`（`todo_app/main_window.py`）驱动 UI 与业务流。
-- **运行**：开发环境可执行 `python main.py`；GitHub Actions 工作流 `build-exe.yml` 在手动触发、推送到 `main` 或推送 `v*` 标签时生成 Windows 单文件可执行程序并上传保留 7 天的临时 Artifact。`main` 推送还会根据 `APP_VERSION` 移动对应的 `pre<版本号>` 标签并更新不作为 Latest 的 Pre-release；手动构建不修改标签或 Release；只有显式推送且不可移动的 `v*` 标签才创建或更新正式 Release。
-- **依赖要点**：PySide6 GUI 组件、`QSoundEffect` 播放提醒、`todos.json` 做本地数据缓存。
+- **运行**：开发环境可执行 `python main.py`；GitHub Actions 工作流 `tests.yml` 在所有 pull request 和推送到 `main` 时，以 Python 3.11、Qt offscreen 环境依次执行源码编译检查和完整 `unittest`。`build-exe.yml` 在手动触发、推送到 `main` 或推送 `v*` 标签时生成 Windows 单文件可执行程序并上传保留 7 天的临时 Artifact。`main` 推送还会根据 `APP_VERSION` 移动对应的 `pre<版本号>` 标签并更新不作为 Latest 的 Pre-release；手动构建不修改标签或 Release；只有显式推送且不可移动的 `v*` 标签才创建或更新正式 Release。
+- **依赖要点**：`requirements.txt` 精确锁定 PySide6 运行依赖，`requirements-dev.txt` 在运行依赖之上精确锁定 PyInstaller；应用使用 PySide6 GUI 组件与 `QSoundEffect` 播放提醒，并以 `todos.json` 做本地数据缓存。
 
 ## 技术路径
 - **启动链路**：`main.py` → `todo_app/app.py::run`（先注册应用字体）→ `todo_app/main_window.py::ModernTodoAppWindow`。
@@ -75,6 +75,7 @@
 - 若确认无变更，提交说明需写明“锚点已复盘，无需更新”。
 
 ## 最近约定变更
+- 2026-07-30：refactor（流程维护），为 pull request 与 `main` 建立 Python 3.11 / Qt offscreen 自动化测试门禁，精确锁定 PySide6 与 PyInstaller，并让 Windows 打包从依赖文件安装（应用行为不变，不触发版本号）。
 - 2026-07-20：feature，为被省略或包含换行的任务正文增加不抢焦点的主题化悬停详情浮层，完整保留纯文本并限制自动换行宽度，版本更新至 `v1.8.0`。
 - 2026-07-19：bugfix，任务正文改为逐逻辑行独立末尾省略，短任务按自然宽度释放空间以优先完整显示可容纳的计时文字，字体复盘后继续保留统一的 HarmonyOS Sans SC，版本更新至 `v1.7.21`。
 - 2026-07-19：bugfix，任务正文改为保留换行并按 viewport 动态换行/同步卡片高度，筛选框按真实样式完整显示四字选项，添加按钮收敛为单一主题圆形背景，并内置 HarmonyOS Sans SC 统一中英文字体来源，版本更新至 `v1.7.20`。
