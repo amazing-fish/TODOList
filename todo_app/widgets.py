@@ -31,21 +31,45 @@ from PySide6.QtWidgets import (
 from .constants import (
     DONE_ICON_PATH,
     INCOMPLETE_ICON_PATH,
+    TASK_ACTION_AREA_WIDTH,
+    TASK_ACTION_BUTTON_HEIGHT,
+    TASK_ACTION_BUTTON_MINIMUM_WIDTH,
+    TASK_ACTION_LAYOUT_HORIZONTAL_MARGIN,
+    TASK_ACTION_LAYOUT_SPACING,
+    TASK_ACTION_LAYOUT_VERTICAL_MARGIN,
+    TASK_AREA_FLOOR_WIDTH,
+    TASK_AREA_MAXIMUM_MINIMUM_WIDTH,
+    TASK_CARD_HORIZONTAL_SPACING,
+    TASK_CARD_MINIMUM_HEIGHT,
+    TASK_CONTENT_VERTICAL_SPACING,
+    TASK_DETAILS_FRAME_WIDTH,
+    TASK_DETAILS_GAP,
+    TASK_DETAILS_HORIZONTAL_MARGIN,
+    TASK_DETAILS_MAXIMUM_WIDTH,
+    TASK_DETAILS_MINIMUM_SCROLLBAR_RESERVE,
+    TASK_DETAILS_MINIMUM_TEXT_WIDTH,
+    TASK_DETAILS_MINIMUM_VERTICAL_SPACE,
+    TASK_DETAILS_VERTICAL_MARGIN,
+    TASK_TIMER_MINIMUM_WIDTH,
+)
+from .layout import (
+    LayoutRect,
+    TaskCardLayout,
+    TaskCardLayoutInput,
+    TaskDetailsHeight,
+    TaskDetailsPlacement,
+    TaskDetailsPlacementInput,
+    TaskDetailsWidthInput,
+    calculate_task_card_layout,
+    calculate_task_details_height,
+    calculate_task_details_placement,
+    calculate_task_details_width,
 )
 from .utils import get_icon
 from .theme import ThemeColors, get_theme_manager
 
 
 _TASK_LINE_BREAKS = re.compile(r"\r\n|\r|\n")
-_TASK_AREA_FLOOR_WIDTH = 40
-_TASK_AREA_MAX_MINIMUM_WIDTH = 150
-_TASK_DETAILS_MAX_WIDTH = 360
-_TASK_DETAILS_MIN_TEXT_WIDTH = 160
-_TASK_DETAILS_HORIZONTAL_MARGIN = 12
-_TASK_DETAILS_VERTICAL_MARGIN = 10
-_TASK_DETAILS_FRAME_WIDTH = 2
-_TASK_DETAILS_GAP = 6
-_TASK_DETAILS_MIN_VERTICAL_SPACE = 120
 
 
 def _build_action_icon(kind: str, color: str) -> QIcon:
@@ -106,6 +130,7 @@ class _ElidedLabel(QLabel):
         super().__init__("", parent)
         self._full_text = ""
         self._preserved_prefixes = preserved_prefixes
+        self._layout_available_width: Optional[int] = None
         self.set_full_text(text)
 
     @property
@@ -117,8 +142,27 @@ class _ElidedLabel(QLabel):
         self.updateGeometry()
         self.refresh_elision()
 
+    def set_layout_available_width(self, width: Optional[int]) -> None:
+        """使用统一布局结果提供的文本可用宽度。"""
+
+        self._layout_available_width = None if width is None else max(width, 0)
+        self.refresh_elision()
+
+    def preserved_prefix_minimum_width(self) -> int:
+        """测量保留状态前缀与省略号所需宽度。"""
+
+        return max(
+            (
+                self.fontMetrics().horizontalAdvance(prefix + "…")
+                for prefix in self._preserved_prefixes
+            ),
+            default=0,
+        )
+
     def refresh_elision(self) -> None:
-        available_width = self.contentsRect().width()
+        available_width = self._layout_available_width
+        if available_width is None:
+            available_width = self.contentsRect().width()
         displayed_text = self._full_text
         if available_width > 0:
             displayed_text = self.fontMetrics().elidedText(
@@ -191,6 +235,7 @@ class _PerLineElidedTaskLabel(QLabel):
         super().__init__(text, parent)
         self._is_elided = False
         self._is_hovered = False
+        self._layout_available_width: Optional[int] = None
         self.setMouseTracking(True)
         self.refresh_elision()
 
@@ -198,7 +243,15 @@ class _PerLineElidedTaskLabel(QLabel):
         return _TASK_LINE_BREAKS.split(self.text())
 
     def _available_width(self) -> int:
+        if self._layout_available_width is not None:
+            return self._layout_available_width
         return max(self.contentsRect().width() - (self.margin() * 2), 0)
+
+    def set_layout_available_width(self, width: Optional[int]) -> None:
+        """使用统一布局结果提供的逐行省略宽度。"""
+
+        self._layout_available_width = None if width is None else max(width, 0)
+        self.refresh_elision()
 
     def displayed_lines(self) -> list[str]:
         logical_lines = self.logical_lines()
@@ -337,14 +390,14 @@ class _TaskDetailsPopup(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setMaximumWidth(_TASK_DETAILS_MAX_WIDTH)
+        self.setMaximumWidth(TASK_DETAILS_MAXIMUM_WIDTH)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(
-            _TASK_DETAILS_HORIZONTAL_MARGIN,
-            _TASK_DETAILS_VERTICAL_MARGIN,
-            _TASK_DETAILS_HORIZONTAL_MARGIN,
-            _TASK_DETAILS_VERTICAL_MARGIN,
+            TASK_DETAILS_HORIZONTAL_MARGIN,
+            TASK_DETAILS_VERTICAL_MARGIN,
+            TASK_DETAILS_HORIZONTAL_MARGIN,
+            TASK_DETAILS_VERTICAL_MARGIN,
         )
         self.scroll_area = QScrollArea()
         self.scroll_area.setObjectName("TodoTaskDetailsScrollArea")
@@ -359,7 +412,7 @@ class _TaskDetailsPopup(QFrame):
         self.scroll_area.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.scroll_area.verticalScrollBar().setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._scrollbar_reserve = max(
-            8,
+            TASK_DETAILS_MINIMUM_SCROLLBAR_RESERVE,
             self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent),
         )
         self._content_height = 0
@@ -382,27 +435,12 @@ class _TaskDetailsPopup(QFrame):
         """保留原文并按最大宽度计算紧凑的自动换行尺寸。"""
 
         self.details_label.setText(text)
-        self.set_width_limit(_TASK_DETAILS_MAX_WIDTH)
+        self.set_width_limit(TASK_DETAILS_MAXIMUM_WIDTH)
         self.scroll_area.verticalScrollBar().setValue(0)
 
     def set_width_limit(self, maximum_width: int) -> None:
         """限制外框宽度，并按实际文字宽度重新计算换行高度。"""
 
-        horizontal_overhead = (
-            (_TASK_DETAILS_HORIZONTAL_MARGIN * 2)
-            + _TASK_DETAILS_FRAME_WIDTH
-            + self._scrollbar_reserve
-        )
-        popup_width_limit = min(
-            max(maximum_width, horizontal_overhead + 1),
-            _TASK_DETAILS_MAX_WIDTH,
-        )
-        max_text_width = (
-            popup_width_limit
-            - (_TASK_DETAILS_HORIZONTAL_MARGIN * 2)
-            - _TASK_DETAILS_FRAME_WIDTH
-            - self._scrollbar_reserve
-        )
         natural_width = max(
             (
                 self.details_label.fontMetrics().horizontalAdvance(line)
@@ -410,68 +448,66 @@ class _TaskDetailsPopup(QFrame):
             ),
             default=0,
         )
-        text_width = min(
-            max(
-                natural_width,
-                min(_TASK_DETAILS_MIN_TEXT_WIDTH, max_text_width),
-            ),
-            max_text_width,
+        width_layout = calculate_task_details_width(
+            TaskDetailsWidthInput(
+                maximum_width=maximum_width,
+                natural_text_width=natural_width,
+                scrollbar_reserve=self._scrollbar_reserve,
+                maximum_popup_width=TASK_DETAILS_MAXIMUM_WIDTH,
+                minimum_text_width=TASK_DETAILS_MINIMUM_TEXT_WIDTH,
+                horizontal_margin=TASK_DETAILS_HORIZONTAL_MARGIN,
+                frame_width=TASK_DETAILS_FRAME_WIDTH,
+            )
         )
-        self.details_label.setFixedWidth(text_width)
-        details_height = self.details_label.heightForWidth(text_width)
+        self.details_label.setFixedWidth(width_layout.text_width)
+        details_height = self.details_label.heightForWidth(width_layout.text_width)
         self._content_height = max(
             details_height,
             self.details_label.fontMetrics().lineSpacing(),
         )
         self.details_label.setFixedHeight(self._content_height)
-        self.scroll_area.setFixedWidth(text_width + self._scrollbar_reserve)
-        self.setFixedWidth(
-            text_width
-            + self._scrollbar_reserve
-            + (_TASK_DETAILS_HORIZONTAL_MARGIN * 2)
-            + _TASK_DETAILS_FRAME_WIDTH
-        )
+        self.scroll_area.setFixedWidth(width_layout.scroll_area_width)
+        self.setFixedWidth(width_layout.popup_width)
         self.set_height_limit(
             self._content_height
-            + (_TASK_DETAILS_VERTICAL_MARGIN * 2)
-            + _TASK_DETAILS_FRAME_WIDTH
+            + (TASK_DETAILS_VERTICAL_MARGIN * 2)
+            + TASK_DETAILS_FRAME_WIDTH
         )
 
     def set_height_limit(self, maximum_height: int) -> bool:
         """限制外框高度，并返回是否仍有可显示的滚动视口。"""
 
-        maximum_height = max(maximum_height, 0)
-        minimum_viewport_height = min(
-            self._content_height,
-            self.details_label.fontMetrics().lineSpacing(),
+        height_layout = calculate_task_details_height(
+            maximum_height=maximum_height,
+            content_height=self._content_height,
+            line_height=self.details_label.fontMetrics().lineSpacing(),
+            vertical_margin=TASK_DETAILS_VERTICAL_MARGIN,
+            frame_width=TASK_DETAILS_FRAME_WIDTH,
         )
-        margin_budget = max(
-            maximum_height
-            - _TASK_DETAILS_FRAME_WIDTH
-            - minimum_viewport_height,
-            0,
-        )
-        vertical_margin = min(
-            _TASK_DETAILS_VERTICAL_MARGIN,
-            margin_budget // 2,
-        )
-        frame_height = (vertical_margin * 2) + _TASK_DETAILS_FRAME_WIDTH
-        viewport_capacity = maximum_height - frame_height
-        if viewport_capacity < 1:
+        if height_layout is None:
             return False
+        self._apply_height_layout(height_layout)
+        return True
+
+    def _apply_height_layout(self, height_layout: TaskDetailsHeight) -> None:
+        """把纯函数生成的高度决策应用到 Qt 控件。"""
 
         layout = self.layout()
         if layout is not None:
             layout.setContentsMargins(
-                _TASK_DETAILS_HORIZONTAL_MARGIN,
-                vertical_margin,
-                _TASK_DETAILS_HORIZONTAL_MARGIN,
-                vertical_margin,
+                TASK_DETAILS_HORIZONTAL_MARGIN,
+                height_layout.vertical_margin,
+                TASK_DETAILS_HORIZONTAL_MARGIN,
+                height_layout.vertical_margin,
             )
-        viewport_height = min(self._content_height, viewport_capacity)
-        self.scroll_area.setFixedHeight(viewport_height)
-        self.setFixedHeight(viewport_height + frame_height)
-        return True
+        self.scroll_area.setFixedHeight(height_layout.viewport_height)
+        self.setFixedHeight(height_layout.popup_height)
+
+    def apply_placement(self, placement: TaskDetailsPlacement) -> None:
+        """应用纯函数生成的最终浮层位置与高度。"""
+
+        self._apply_height_layout(placement.height)
+        self.move(placement.x, placement.y)
 
     def scroll_details(self, wheel_delta: int) -> bool:
         """滚动超长详情，并返回内容是否真的移动。"""
@@ -540,6 +576,9 @@ class TodoItemWidget(QFrame):
         self.original_text = todo_item.get("text", "无内容")
         self._theme_manager = get_theme_manager()
         self._palette: ThemeColors = palette or self._theme_manager.current_palette
+        self._list_spacing = 0
+        self._layout_result: Optional[TaskCardLayout] = None
+        self._applying_layout = False
         self._build_ui()
         self.apply_palette(self._palette)
 
@@ -547,14 +586,14 @@ class TodoItemWidget(QFrame):
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setFrameShadow(QFrame.Shadow.Raised)
         self.setObjectName("TodoItemWidget")
-        self.setMinimumHeight(92)
+        self.setMinimumHeight(TASK_CARD_MINIMUM_HEIGHT)
         card_policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         card_policy.setHeightForWidth(True)
         self.setSizePolicy(card_policy)
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(10)
+        main_layout.setSpacing(TASK_CARD_HORIZONTAL_SPACING)
 
         self.complete_button = QPushButton()
         self.complete_button.setObjectName("TodoCompleteButton")
@@ -577,7 +616,7 @@ class TodoItemWidget(QFrame):
         self.content_container.setSizePolicy(content_policy)
         content_layout = QVBoxLayout(self.content_container)
         content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(4)
+        content_layout.setSpacing(TASK_CONTENT_VERTICAL_SPACING)
         self.task_text_label = _PerLineElidedTaskLabel(self.original_text)
         self.task_text_label.setTextFormat(Qt.TextFormat.PlainText)
         self.task_text_label.setWordWrap(False)
@@ -608,14 +647,13 @@ class TodoItemWidget(QFrame):
         self.priority_label.setTextFormat(Qt.TextFormat.RichText)
         content_layout.addWidget(self.task_text_label)
         content_layout.addWidget(self.priority_label)
-        self._update_task_area_minimum_width()
         main_layout.addWidget(self.content_container, 1)
 
         self.timer_display_label = _ElidedLabel(
             "无计时",
             preserved_prefixes=("剩余", "已到期", "推迟"),
         )
-        self.timer_display_label.setMinimumWidth(50)
+        self.timer_display_label.setMinimumWidth(TASK_TIMER_MINIMUM_WIDTH)
         self.timer_display_label.setSizePolicy(
             QSizePolicy.Policy.Preferred,
             QSizePolicy.Policy.Preferred,
@@ -627,8 +665,13 @@ class TodoItemWidget(QFrame):
         self.actions_container.setObjectName("TodoActionsContainer")
         self.actions_container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         actions_layout = QVBoxLayout(self.actions_container)
-        actions_layout.setContentsMargins(4, 3, 4, 3)
-        actions_layout.setSpacing(2)
+        actions_layout.setContentsMargins(
+            TASK_ACTION_LAYOUT_HORIZONTAL_MARGIN,
+            TASK_ACTION_LAYOUT_VERTICAL_MARGIN,
+            TASK_ACTION_LAYOUT_HORIZONTAL_MARGIN,
+            TASK_ACTION_LAYOUT_VERTICAL_MARGIN,
+        )
+        actions_layout.setSpacing(TASK_ACTION_LAYOUT_SPACING)
 
         self.edit_button = QPushButton()
         self.edit_button.setObjectName("TodoEditButton")
@@ -645,15 +688,15 @@ class TodoItemWidget(QFrame):
         self.delete_button.clicked.connect(self._delete_item)
 
         for button in (self.edit_button, self.delete_button):
-            button.setMinimumWidth(28)
-            button.setFixedHeight(26)
+            button.setMinimumWidth(TASK_ACTION_BUTTON_MINIMUM_WIDTH)
+            button.setFixedHeight(TASK_ACTION_BUTTON_HEIGHT)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
 
         actions_layout.addWidget(self.edit_button)
         actions_layout.addWidget(self.delete_button)
         actions_layout.addStretch()
 
-        self.actions_container.setFixedWidth(38)
+        self.actions_container.setFixedWidth(TASK_ACTION_AREA_WIDTH)
         self.actions_container.hide()
 
         self.update_timer_display(datetime.now(timezone.utc))
@@ -684,7 +727,6 @@ class TodoItemWidget(QFrame):
         timer_font.setStrikeOut(is_completed)
         self.timer_display_label.setFont(timer_font)
         self.timer_display_label.setStyleSheet(f"color: {palette.text_secondary};")
-        self._update_timer_minimum_width()
         self.update_timer_display(datetime.now(timezone.utc))
 
     def _update_frame_background(self) -> None:
@@ -762,8 +804,10 @@ class TodoItemWidget(QFrame):
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
-        self._position_actions_overlay()
-        self.timer_display_label.refresh_elision()
+        layout_result = self._refresh_task_card_layout(
+            viewport_width=self.width() + (self._list_spacing * 2),
+        )
+        self._position_actions_overlay(layout_result)
         if (
             self.task_text_label.is_hovered()
             and self.task_text_label.needs_details()
@@ -817,123 +861,195 @@ class TodoItemWidget(QFrame):
         popup.set_width_limit(available.width())
         task_origin = self.task_text_label.mapToGlobal(QPoint(0, 0))
         card_rect = QRect(self.mapToGlobal(QPoint(0, 0)), self.size())
-        space_below = max(
-            available.bottom() - card_rect.bottom() - _TASK_DETAILS_GAP,
-            0,
-        )
-        space_above = max(
-            card_rect.top() - available.top() - _TASK_DETAILS_GAP,
-            0,
-        )
-        space_right = max(
-            available.right() - card_rect.right() - _TASK_DETAILS_GAP,
-            0,
-        )
-        space_left = max(
-            card_rect.left() - available.left() - _TASK_DETAILS_GAP,
-            0,
-        )
-
-        # 上下空间都过小时优先移到卡片侧面，避免详情覆盖编辑/删除区域。
-        if (
-            max(space_above, space_below) < _TASK_DETAILS_MIN_VERTICAL_SPACE
-            and max(space_left, space_right) >= popup.width()
-        ):
-            if not popup.set_height_limit(available.height()):
-                return False
-            if space_right >= popup.width():
-                popup_x = card_rect.right() + _TASK_DETAILS_GAP + 1
-            else:
-                popup_x = card_rect.left() - _TASK_DETAILS_GAP - popup.width()
-            maximum_y = max(
-                available.top(),
-                available.bottom() - popup.height() + 1,
+        placement = calculate_task_details_placement(
+            TaskDetailsPlacementInput(
+                available=LayoutRect(
+                    available.left(),
+                    available.top(),
+                    available.width(),
+                    available.height(),
+                ),
+                card=LayoutRect(
+                    card_rect.left(),
+                    card_rect.top(),
+                    card_rect.width(),
+                    card_rect.height(),
+                ),
+                task_origin_x=task_origin.x(),
+                task_origin_y=task_origin.y(),
+                popup_width=popup.width(),
+                content_height=popup._content_height,
+                line_height=popup.details_label.fontMetrics().lineSpacing(),
+                gap=TASK_DETAILS_GAP,
+                minimum_vertical_space=TASK_DETAILS_MINIMUM_VERTICAL_SPACE,
+                vertical_margin=TASK_DETAILS_VERTICAL_MARGIN,
+                frame_width=TASK_DETAILS_FRAME_WIDTH,
             )
-            popup_y = min(max(task_origin.y(), available.top()), maximum_y)
-            popup.move(popup_x, popup_y)
-            return True
-
-        show_below = space_below >= space_above
-        vertical_space = space_below if show_below else space_above
-        if not popup.set_height_limit(vertical_space):
+        )
+        if placement is None:
             return False
-        maximum_x = max(
-            available.left(),
-            available.right() - popup.width() + 1,
-        )
-        popup_x = min(
-            max(task_origin.x(), available.left()),
-            maximum_x,
-        )
-        if show_below:
-            popup_y = card_rect.bottom() + _TASK_DETAILS_GAP + 1
-        else:
-            popup_y = card_rect.top() - _TASK_DETAILS_GAP - popup.height()
-        popup.move(popup_x, popup_y)
+        popup.apply_placement(placement)
         return True
 
     def heightForWidth(self, width: int) -> int:  # noqa: N802
-        layout = self.layout()
-        if layout is None:
-            return self.minimumHeight()
-
-        layout_height = layout.heightForWidth(max(width, 0))
-        if layout_height < 0:
-            layout_height = layout.sizeHint().height()
-        return max(self.minimumHeight(), layout_height)
+        return self._refresh_task_card_layout(
+            viewport_width=max(width, 0) + (self._list_spacing * 2),
+        ).card_height
 
     def requiredHeight(self) -> int:  # noqa: N802
-        """根据布局后的真实正文宽度返回完整卡片高度。"""
+        """返回统一布局结果决定的完整卡片高度。"""
 
-        main_layout = self.layout()
-        content_layout = self.content_container.layout()
-        if main_layout is None or content_layout is None:
-            return self.minimumHeight()
-
-        main_layout.activate()
-        content_layout.activate()
-        content_margins = content_layout.contentsMargins()
-        text_height = self.task_text_label.heightForWidth(
-            self.task_text_label.contentsRect().width()
-        )
-        priority_height = max(
-            self.priority_label.minimumHeight(),
-            self.priority_label.sizeHint().height(),
-        )
-        content_height = (
-            content_margins.top()
-            + text_height
-            + content_layout.spacing()
-            + priority_height
-            + content_margins.bottom()
-        )
-        child_height = max(
-            content_height,
-            self.complete_button.sizeHint().height(),
-            self.timer_display_label.sizeHint().height(),
-        )
-        main_margins = main_layout.contentsMargins()
-        frame_vertical_inset = max(0, self.height() - self.contentsRect().height())
-        return max(
-            self.minimumHeight(),
-            frame_vertical_inset
-            + main_margins.top()
-            + child_height
-            + main_margins.bottom(),
-        )
+        return self._refresh_task_card_layout().card_height
 
     def sizeHint(self) -> QSize:  # noqa: N802
         size_hint = super().sizeHint()
         width = self.width() if self.width() > 0 else size_hint.width()
         return QSize(size_hint.width(), self.heightForWidth(width))
 
-    def _position_actions_overlay(self) -> None:
+    def refresh_layout(
+        self,
+        *,
+        viewport_width: int,
+        list_spacing: int,
+    ) -> TaskCardLayout:
+        """从主窗口 viewport 刷新并返回同一个卡片布局结果。"""
+
+        self._list_spacing = max(list_spacing, 0)
+        return self._refresh_task_card_layout(viewport_width=viewport_width)
+
+    def _refresh_task_card_layout(
+        self,
+        *,
+        viewport_width: Optional[int] = None,
+    ) -> TaskCardLayout:
+        if self._applying_layout and self._layout_result is not None:
+            return self._layout_result
+
+        if viewport_width is None:
+            viewport_width = self.width() + (self._list_spacing * 2)
+        layout_result = calculate_task_card_layout(
+            self._task_card_layout_input(viewport_width)
+        )
+        self._layout_result = layout_result
+
+        self._applying_layout = True
+        try:
+            if (
+                self.content_container.minimumWidth()
+                != layout_result.task_area_minimum_width
+            ):
+                self.content_container.setMinimumWidth(
+                    layout_result.task_area_minimum_width
+                )
+            if (
+                self.task_text_label.minimumWidth()
+                != layout_result.task_area_minimum_width
+            ):
+                self.task_text_label.setMinimumWidth(
+                    layout_result.task_area_minimum_width
+                )
+            if (
+                self.timer_display_label.minimumWidth()
+                != layout_result.timer_area_minimum_width
+            ):
+                self.timer_display_label.setMinimumWidth(
+                    layout_result.timer_area_minimum_width
+                )
+            self.task_text_label.set_layout_available_width(
+                layout_result.task_text_available_width
+            )
+            self.timer_display_label.set_layout_available_width(
+                layout_result.timer_text_available_width
+            )
+        finally:
+            self._applying_layout = False
+
+        return layout_result
+
+    def _task_card_layout_input(self, viewport_width: int) -> TaskCardLayoutInput:
+        main_layout = self.layout()
+        content_layout = self.content_container.layout()
+        if main_layout is None or content_layout is None:
+            raise RuntimeError("任务卡片布局尚未初始化")
+
+        main_layout.activate()
+        content_layout.activate()
+        main_margins = main_layout.contentsMargins()
+        content_margins = content_layout.contentsMargins()
+        task_margins = self.task_text_label.contentsMargins()
+        timer_contents = self.timer_display_label.contentsRect()
+        task_contents = self.task_text_label.contentsRect()
+        return TaskCardLayoutInput(
+            viewport_width=viewport_width,
+            list_spacing=self._list_spacing,
+            card_frame_horizontal_inset=max(
+                self.width() - self.contentsRect().width(),
+                0,
+            ),
+            card_frame_vertical_inset=max(
+                self.height() - self.contentsRect().height(),
+                0,
+            ),
+            main_layout_spacing=main_layout.spacing(),
+            main_layout_vertical_inset=main_margins.top() + main_margins.bottom(),
+            complete_area_width=max(
+                self.complete_button.minimumWidth(),
+                self.complete_button.sizeHint().width(),
+            ),
+            complete_area_height=max(
+                self.complete_button.minimumHeight(),
+                self.complete_button.sizeHint().height(),
+            ),
+            task_natural_width=self.task_text_label.natural_width(),
+            priority_natural_width=self.priority_label.sizeHint().width(),
+            task_area_floor_width=TASK_AREA_FLOOR_WIDTH,
+            task_area_maximum_minimum_width=TASK_AREA_MAXIMUM_MINIMUM_WIDTH,
+            task_text_horizontal_inset=max(
+                self.task_text_label.width() - task_contents.width(),
+                0,
+            )
+            + (self.task_text_label.margin() * 2),
+            task_text_vertical_inset=task_margins.top()
+            + task_margins.bottom()
+            + (self.task_text_label.margin() * 2),
+            logical_line_count=len(self.task_text_label.logical_lines()),
+            line_height=self.task_text_label.fontMetrics().lineSpacing(),
+            content_layout_vertical_inset=(
+                content_margins.top() + content_margins.bottom()
+            ),
+            content_layout_spacing=content_layout.spacing(),
+            priority_height=max(
+                self.priority_label.minimumHeight(),
+                self.priority_label.sizeHint().height(),
+            ),
+            timer_natural_width=self.timer_display_label.sizeHint().width(),
+            timer_base_minimum_width=TASK_TIMER_MINIMUM_WIDTH,
+            timer_prefix_minimum_width=(
+                self.timer_display_label.preserved_prefix_minimum_width()
+            ),
+            timer_text_horizontal_inset=max(
+                self.timer_display_label.width() - timer_contents.width(),
+                0,
+            ),
+            timer_height=max(
+                self.timer_display_label.minimumHeight(),
+                self.timer_display_label.sizeHint().height(),
+            ),
+            action_area_width=TASK_ACTION_AREA_WIDTH,
+            card_minimum_height=TASK_CARD_MINIMUM_HEIGHT,
+        )
+
+    def _position_actions_overlay(
+        self,
+        layout_result: Optional[TaskCardLayout] = None,
+    ) -> None:
+        if layout_result is None:
+            layout_result = self._refresh_task_card_layout()
         content_rect = self.contentsRect()
-        overlay_width = min(self.actions_container.width(), content_rect.width())
         self.actions_container.setGeometry(
-            content_rect.right() - overlay_width + 1,
+            content_rect.left() + layout_result.action_area_x,
             content_rect.top(),
-            overlay_width,
+            layout_result.action_area_width,
             content_rect.height(),
         )
         self.actions_container.raise_()
@@ -941,24 +1057,10 @@ class TodoItemWidget(QFrame):
     def update_text_display(self) -> None:
         if self.task_text_label.text() != self.original_text:
             self.task_text_label.setText(self.original_text)
-        self._update_task_area_minimum_width()
-        self.task_text_label.refresh_elision()
+        self._refresh_task_card_layout()
         self.task_text_label.updateGeometry()
         self.content_container.updateGeometry()
         self.updateGeometry()
-        self.timer_display_label.refresh_elision()
-
-    def _update_task_area_minimum_width(self) -> None:
-        natural_width = max(
-            self.task_text_label.natural_width(),
-            self.priority_label.sizeHint().width(),
-        )
-        minimum_width = max(
-            _TASK_AREA_FLOOR_WIDTH,
-            min(_TASK_AREA_MAX_MINIMUM_WIDTH, natural_width),
-        )
-        self.content_container.setMinimumWidth(minimum_width)
-        self.task_text_label.setMinimumWidth(minimum_width)
 
     def _toggle_complete(self) -> None:
         self.request_toggle_complete.emit(self.todo_item["id"])
@@ -971,13 +1073,6 @@ class TodoItemWidget(QFrame):
 
     def _set_timer_text(self, text: str) -> None:
         self.timer_display_label.set_full_text(text)
-
-    def _update_timer_minimum_width(self) -> None:
-        prefix_width = max(
-            self.timer_display_label.fontMetrics().horizontalAdvance(prefix + "…")
-            for prefix in ("剩余", "已到期", "推迟")
-        )
-        self.timer_display_label.setMinimumWidth(max(50, prefix_width))
 
     def update_timer_display(self, current_time_utc: datetime) -> None:
         is_completed = self.todo_item.get("completed", False)
@@ -1000,7 +1095,6 @@ class TodoItemWidget(QFrame):
         timer_font.setItalic(False)
         timer_font.setStrikeOut(is_completed)
         self.timer_display_label.setFont(timer_font)
-        self._update_timer_minimum_width()
         base_timer_color = self._palette.text_completed if is_completed else self._palette.text_secondary
         self.timer_display_label.setStyleSheet(f"color: {base_timer_color};")
 
@@ -1055,7 +1149,6 @@ class TodoItemWidget(QFrame):
             timer_font.setPointSize(10)
             timer_font.setBold(True)
             self.timer_display_label.setFont(timer_font)
-            self._update_timer_minimum_width()
             self.timer_display_label.setStyleSheet(f"color: {self._palette.due_critical};")
         else:
             self._set_timer_text(f"剩余: {time_left_str}")
