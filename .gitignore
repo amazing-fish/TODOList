@@ -12,6 +12,8 @@ env/
 
 # 应用运行时数据
 todos.json
+todos.json.bak
+.todos.json.*.tmp
 
 # PyInstaller 构建产物
 *.spec
