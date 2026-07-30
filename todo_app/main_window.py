@@ -47,8 +47,10 @@ from .constants import (
     APP_VERSION,
     DUE_SOUND_PATH,
     REMINDER_SOUND_PATH,
+    TASK_CARD_LIST_GAP,
 )
 from .dialogs import NotificationDialog, TaskEditDialog
+from .layout import calculate_card_width
 from .scheduling import build_edit_update_fields, build_snooze_update_fields
 from .storage import load_todos, save_todos
 from .utils import get_icon, play_sound_effect
@@ -59,7 +61,6 @@ from .theme import ThemeColors, get_theme_manager
 _MAIN_CONTENT_MARGIN = 15
 _LIST_SCROLLBAR_WIDTH = 8
 _LIST_RIGHT_MARGIN = _MAIN_CONTENT_MARGIN - _LIST_SCROLLBAR_WIDTH
-_TODO_CARD_GAP = 8
 _SORT_COMBO_MIN_WIDTH = 76
 
 
@@ -261,7 +262,7 @@ class ModernTodoAppWindow(QMainWindow):
         self.list_widget = QListWidget()
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         # QListView::spacing 会填充每个 item 四周，相邻卡片间距因此是该值的两倍。
-        self.list_widget.setSpacing(_TODO_CARD_GAP // 2)
+        self.list_widget.setSpacing(TASK_CARD_LIST_GAP // 2)
         self.list_widget.setVerticalScrollMode(QListWidget.ScrollPerPixel)
         scrollbar = self.list_widget.verticalScrollBar()
         scrollbar.setFixedWidth(_LIST_SCROLLBAR_WIDTH)
@@ -940,8 +941,10 @@ class ModernTodoAppWindow(QMainWindow):
             return
 
         viewport = self.list_widget.viewport()
-        card_width = viewport.width() - (self.list_widget.spacing() * 2)
-        if card_width <= 0:
+        if calculate_card_width(
+            viewport.width(),
+            self.list_widget.spacing(),
+        ) <= 0:
             return
 
         self._syncing_todo_card_sizes = True
@@ -954,8 +957,11 @@ class ModernTodoAppWindow(QMainWindow):
                 if not isinstance(item_widget, TodoItemWidget):
                     continue
 
-                item_height = item_widget.requiredHeight()
-                target_hint = QSize(0, item_height)
+                layout_result = item_widget.refresh_layout(
+                    viewport_width=viewport.width(),
+                    list_spacing=self.list_widget.spacing(),
+                )
+                target_hint = QSize(0, layout_result.card_height)
                 if list_item.sizeHint() != target_hint:
                     list_item.setSizeHint(target_hint)
                     changed = True
