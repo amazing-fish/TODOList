@@ -89,3 +89,5 @@
   ```
   请将 `"assets;assets"` 中的分隔符替换为当前系统要求（Windows 使用 `;`，macOS/Linux 使用 `:`）。
 - 打包版本会将 `todos.json` 存放在用户数据目录（Windows 为 `%APPDATA%\TODOList`，其他平台为 `~/.todolist/`），以避免写入只读的程序目录。
+
+![Alt](https://repobeats.axiom.co/api/embed/c7140913b7a7578ef239a8c8e869a2e700537ba1.svg "Repobeats analytics image")
