@@ -60,58 +60,25 @@ class NotificationDialogTest(unittest.TestCase):
         self.assertIsNotNone(status_label)
         self.assertEqual(status_label.text(), "已到期")
 
-    def test_actions_emit_only_selected_tasks_and_keep_remaining_rows(self) -> None:
+    def test_dialog_has_only_inline_actions_and_keeps_remaining_rows(self) -> None:
         dialog = NotificationDialog(
             [(make_todo(1, "第一项"), True), (make_todo(2, "第二项"), True)]
         )
         destroyed = []
         dialog.destroyed.connect(lambda: destroyed.append(True))
-        first_checkbox = dialog.findChild(QCheckBox, "notificationSelect_1")
-        second_checkbox = dialog.findChild(QCheckBox, "notificationSelect_2")
-        self.assertIsNotNone(first_checkbox)
-        self.assertIsNotNone(second_checkbox)
-        self.assertFalse(first_checkbox.isChecked())
-        self.assertFalse(second_checkbox.isChecked())
-        self.assertFalse(dialog.complete_button.isEnabled())
-        self.assertFalse(dialog.snooze_default_button.isEnabled())
-        self.assertFalse(dialog.snooze_menu_button.isEnabled())
-        self.assertFalse(dialog.ignore_button.isEnabled())
-
-        completed: list[list[int]] = []
-        snoozed: list[tuple[list[int], timedelta]] = []
-        ignored: list[list[int]] = []
-        dialog.complete_requested.connect(completed.append)
-        dialog.snooze_requested.connect(lambda ids, duration: snoozed.append((ids, duration)))
-        dialog.ignore_requested.connect(ignored.append)
-
-        dialog.complete_button.click()
-        dialog.snooze_default()
-        dialog.ignore_button.click()
-
-        self.assertEqual(completed, [])
-        self.assertEqual(snoozed, [])
-        self.assertEqual(ignored, [])
-
-        first_checkbox.setChecked(True)
-        self.assertTrue(dialog.complete_button.isEnabled())
-        self.assertTrue(dialog.snooze_default_button.isEnabled())
-        self.assertTrue(dialog.snooze_menu_button.isEnabled())
-        self.assertTrue(dialog.ignore_button.isEnabled())
-        dialog.complete_button.click()
-        dialog.snooze_default()
-        dialog.ignore_button.click()
-
-        self.assertEqual(completed, [[1]])
-        self.assertEqual(snoozed, [([1], timedelta(minutes=15))])
-        self.assertEqual(ignored, [[1]])
+        self.assertEqual(dialog.layout().count(), 2)
+        self.assertEqual(dialog.findChildren(QCheckBox), [])
+        self.assertFalse(hasattr(dialog, "complete_button"))
+        self.assertFalse(hasattr(dialog, "snooze_default_button"))
+        self.assertFalse(hasattr(dialog, "snooze_menu_button"))
+        self.assertFalse(hasattr(dialog, "ignore_button"))
+        self.assertIsNone(dialog.findChild(QPushButton, "batchIgnoreButton"))
 
         dialog.show()
         self.app.processEvents()
         dialog.remove_tasks([1])
         self.assertEqual(dialog.task_ids(), [2])
         self.assertTrue(dialog.isVisible())
-        self.assertFalse(dialog.complete_button.isEnabled())
-        self.assertFalse(dialog.ignore_button.isEnabled())
         dialog.remove_tasks([2])
         self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         self.app.processEvents()
@@ -135,6 +102,8 @@ class NotificationDialogTest(unittest.TestCase):
         self.assertIsNotNone(complete_first)
         self.assertIsNotNone(snooze_second)
         self.assertIsNotNone(ignore_first)
+        self.assertEqual(ignore_first.text(), "忽略")
+        self.assertIn("清除截止时间", ignore_first.toolTip())
         self.assertEqual(
             [action.text() for action in snooze_second.menu().actions()],
             ["15分钟后", "1小时后", "晚上8点", "明天上午9点"],
@@ -192,7 +161,7 @@ class NotificationDialogTest(unittest.TestCase):
         second_now = formatter.call_args_list[1].args[1]
         self.assertIs(first_now, second_now)
 
-    def test_common_three_task_batch_expands_before_scrolling(self) -> None:
+    def test_common_three_task_dialog_expands_before_scrolling(self) -> None:
         dialog = NotificationDialog(
             [(make_todo(todo_id, f"任务{todo_id}"), True) for todo_id in (1, 2, 3)]
         )
@@ -442,7 +411,7 @@ class NotificationBatchIntegrationTest(unittest.TestCase):
             self.assertEqual(dialog.show_count, 2)
             self.assertTrue(dialog.visible)
 
-    def test_batch_actions_update_only_requested_tasks_once(self) -> None:
+    def test_requested_actions_update_only_requested_tasks_once(self) -> None:
         tasks = [make_todo(todo_id, f"任务{todo_id}") for todo_id in (1, 2, 3)]
         FakeNotificationDialog.instances = []
         with (
@@ -470,7 +439,7 @@ class NotificationBatchIntegrationTest(unittest.TestCase):
             window.toggle_complete_todo(3)
             self.assertEqual(dialog.task_ids(), [])
 
-    def test_batch_snooze_keeps_unselected_tasks_unchanged(self) -> None:
+    def test_snooze_handler_keeps_other_tasks_unchanged(self) -> None:
         first = make_todo(1, "任务1")
         second = make_todo(2, "任务2")
         first_before = first.copy()
