@@ -170,6 +170,28 @@ class NotificationDialogTest(unittest.TestCase):
         self.assertIn("还有 5分", before_due)
         self.assertIn("已超时 12分", after_due)
 
+    def test_relative_time_timer_refreshes_all_open_rows(self) -> None:
+        dialog = NotificationDialog(
+            [(make_todo(1, "第一项"), True), (make_todo(2, "第二项"), False)]
+        )
+        self.addCleanup(dialog.close)
+        self.assertTrue(dialog._relative_time_timer.isActive())
+        self.assertEqual(dialog._relative_time_timer.interval(), 1000)
+
+        with patch.object(
+            dialog,
+            "_format_due_text",
+            side_effect=["第一项已刷新", "第二项已刷新"],
+        ) as formatter:
+            dialog._relative_time_timer.timeout.emit()
+
+        self.assertEqual(dialog._task_rows[1]["detail_label"].text(), "第一项已刷新")
+        self.assertEqual(dialog._task_rows[2]["detail_label"].text(), "第二项已刷新")
+        self.assertEqual(formatter.call_count, 2)
+        first_now = formatter.call_args_list[0].args[1]
+        second_now = formatter.call_args_list[1].args[1]
+        self.assertIs(first_now, second_now)
+
     def test_common_three_task_batch_expands_before_scrolling(self) -> None:
         dialog = NotificationDialog(
             [(make_todo(todo_id, f"任务{todo_id}"), True) for todo_id in (1, 2, 3)]

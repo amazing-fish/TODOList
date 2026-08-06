@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, time, timezone
 from typing import Optional
 
-from PySide6.QtCore import QDateTime, QTime, Qt, Signal, Slot
+from PySide6.QtCore import QDateTime, QTime, QTimer, Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
     QDateEdit,
@@ -54,6 +54,10 @@ class NotificationDialog(QDialog):
         self._build_ui(parent)
         self.add_or_update_tasks(requests)
         self._apply_palette(self._palette)
+        self._relative_time_timer = QTimer(self)
+        self._relative_time_timer.setInterval(1000)
+        self._relative_time_timer.timeout.connect(self._refresh_relative_times)
+        self._relative_time_timer.start()
 
     def _build_ui(self, parent=None) -> None:
         self.setWindowTitle("任务提醒")
@@ -224,6 +228,13 @@ class NotificationDialog(QDialog):
         row["text_label"].setText(str(todo_item.get("text", "无内容")))
         row["detail_label"].setText(self._format_due_text(todo_item))
         row["status_label"].setText("已到期" if row["is_due"] else "提前提醒")
+
+    def _refresh_relative_times(self) -> None:
+        current_time_utc = datetime.now(timezone.utc)
+        for row in self._task_rows.values():
+            row["detail_label"].setText(
+                self._format_due_text(row["todo_item"], current_time_utc)
+            )
 
     def _format_due_text(
         self, todo_item: dict, current_time_utc: Optional[datetime] = None
