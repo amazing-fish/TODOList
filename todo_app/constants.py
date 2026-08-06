@@ -48,7 +48,7 @@ class ThemeColors:
 
 # --- 基本信息 ---
 APP_NAME = "桌面待办事项 v1"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 
 # --- 文件资源 ---
 APP_ICON_PATH = "assets/icons/app_icon.svg"

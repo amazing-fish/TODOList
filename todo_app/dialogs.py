@@ -4,9 +4,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, time, timezone
 from typing import Optional
 
-from PySide6.QtCore import QDateTime, QTime, Qt, Signal, Slot
+from PySide6.QtCore import QDateTime, QTime, QTimer, Qt, Signal, Slot
 from PySide6.QtWidgets import (
-    QCheckBox,
     QDateEdit,
     QDialog,
     QDialogButtonBox,
@@ -16,7 +15,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSpacerItem,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
     QMenu,
@@ -43,6 +41,7 @@ class NotificationDialog(QDialog):
 
     complete_requested = Signal(list)
     snooze_requested = Signal(list, object)
+    ignore_requested = Signal(list)
 
     def __init__(self, requests: list[tuple[dict, bool]], parent=None):
         super().__init__(parent)
@@ -50,11 +49,15 @@ class NotificationDialog(QDialog):
         self._theme_manager = get_theme_manager()
         self._palette: ThemeColors = self._theme_manager.current_palette
         self._theme_manager.theme_changed.connect(self._on_theme_changed)
-        self._build_ui(parent)
+        self._build_ui()
         self.add_or_update_tasks(requests)
         self._apply_palette(self._palette)
+        self._relative_time_timer = QTimer(self)
+        self._relative_time_timer.setInterval(1000)
+        self._relative_time_timer.timeout.connect(self._refresh_relative_times)
+        self._relative_time_timer.start()
 
-    def _build_ui(self, parent=None) -> None:
+    def _build_ui(self) -> None:
         self.setWindowTitle("任务提醒")
         self.setWindowIcon(get_icon(APP_ICON_PATH, "🔔"))
         self.setMinimumWidth(460)
@@ -79,43 +82,6 @@ class NotificationDialog(QDialog):
         self.tasks_scroll.setWidget(self.tasks_container)
         layout.addWidget(self.tasks_scroll)
 
-        button_layout = QHBoxLayout()
-        self.complete_button = QPushButton(get_icon("", "✓"), "完成选中")
-        self.complete_button.clicked.connect(self._emit_complete_requested)
-        self.dismiss_button = QPushButton("忽略全部")
-        self.dismiss_button.clicked.connect(self.reject)
-
-        snooze_widget = QWidget()
-        snooze_layout = QHBoxLayout(snooze_widget)
-        snooze_layout.setContentsMargins(0, 0, 0, 0)
-        snooze_layout.setSpacing(1)
-
-        self.snooze_default_button = QPushButton(get_icon("", "⏰"), " 选中推迟15分钟")
-        self.snooze_default_button.setObjectName("snoozeDefaultButton")
-        self.snooze_default_button.clicked.connect(self.snooze_default)
-
-        self.snooze_menu_button = QPushButton("▼")
-        self.snooze_menu_button.setObjectName("snoozeMenuButton")
-        self.snooze_menu_button.setFixedWidth(30)
-
-        snooze_menu = QMenu(self)
-        snooze_menu.addAction("15分钟后", self.snooze_default)
-        snooze_menu.addAction("1小时后", self.snooze_1_hour)
-        snooze_menu.addAction("晚上8点", self.snooze_8pm)
-        snooze_menu.addAction("明天上午9点", self.snooze_tomorrow_9am)
-        self.snooze_menu_button.setMenu(snooze_menu)
-
-        snooze_layout.addWidget(self.snooze_default_button)
-        snooze_layout.addWidget(self.snooze_menu_button)
-
-        button_layout.addWidget(self.complete_button)
-        button_layout.addSpacerItem(
-            QSpacerItem(20, 10, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        )
-        button_layout.addWidget(snooze_widget)
-        button_layout.addWidget(self.dismiss_button)
-        layout.addLayout(button_layout)
-
     def add_or_update_tasks(self, requests: list[tuple[dict, bool]]) -> None:
         for todo_item, is_due in requests:
             todo_id = int(todo_item["id"])
@@ -131,12 +97,6 @@ class NotificationDialog(QDialog):
             row_layout = QHBoxLayout(row_widget)
             row_layout.setContentsMargins(10, 8, 10, 8)
             row_layout.setSpacing(10)
-
-            checkbox = QCheckBox()
-            checkbox.setObjectName(f"notificationSelect_{todo_id}")
-            checkbox.setChecked(True)
-            checkbox.setToolTip("选择此任务进行批量处理")
-            row_layout.addWidget(checkbox)
 
             content_layout = QVBoxLayout()
             content_layout.setContentsMargins(0, 0, 0, 0)
@@ -154,15 +114,52 @@ class NotificationDialog(QDialog):
             content_layout.addWidget(status_label)
             row_layout.addLayout(content_layout, 1)
 
+            action_layout = QHBoxLayout()
+            action_layout.setContentsMargins(0, 0, 0, 0)
+            action_layout.setSpacing(4)
+
+            complete_action = QPushButton("完成")
+            complete_action.setObjectName(f"notificationComplete_{todo_id}")
+            complete_action.setProperty("notificationRowAction", True)
+            complete_action.setToolTip("仅将此任务标记为完成")
+            complete_action.clicked.connect(
+                lambda _checked=False, task_id=todo_id: self.complete_requested.emit([task_id])
+            )
+
+            snooze_action = QPushButton("推迟")
+            snooze_action.setObjectName(f"notificationSnooze_{todo_id}")
+            snooze_action.setProperty("notificationRowAction", True)
+            snooze_action.setProperty("notificationSnoozeAction", True)
+            snooze_action.setToolTip("仅为此任务选择推迟时长")
+            snooze_action.setMenu(self._build_snooze_menu([todo_id], snooze_action))
+
+            ignore_action = QPushButton("忽略")
+            ignore_action.setObjectName(f"notificationIgnore_{todo_id}")
+            ignore_action.setProperty("notificationRowAction", True)
+            ignore_action.setProperty("notificationIgnoreAction", True)
+            ignore_action.setToolTip(
+                "保留此任务并清除截止时间；不会标记为完成，重新设置截止时间前不再提醒"
+            )
+            ignore_action.clicked.connect(
+                lambda _checked=False, task_id=todo_id: self.ignore_requested.emit([task_id])
+            )
+
+            action_layout.addWidget(complete_action)
+            action_layout.addWidget(snooze_action)
+            action_layout.addWidget(ignore_action)
+            row_layout.addLayout(action_layout)
+
             self.tasks_layout.addWidget(row_widget)
             self._task_rows[todo_id] = {
                 "todo_item": todo_item,
                 "is_due": is_due,
                 "widget": row_widget,
-                "checkbox": checkbox,
                 "text_label": text_label,
                 "detail_label": detail_label,
                 "status_label": status_label,
+                "complete_action": complete_action,
+                "snooze_action": snooze_action,
+                "ignore_action": ignore_action,
             }
             self._update_task_row(todo_id)
 
@@ -177,7 +174,16 @@ class NotificationDialog(QDialog):
         row["detail_label"].setText(self._format_due_text(todo_item))
         row["status_label"].setText("已到期" if row["is_due"] else "提前提醒")
 
-    def _format_due_text(self, todo_item: dict) -> str:
+    def _refresh_relative_times(self) -> None:
+        current_time_utc = datetime.now(timezone.utc)
+        for row in self._task_rows.values():
+            row["detail_label"].setText(
+                self._format_due_text(row["todo_item"], current_time_utc)
+            )
+
+    def _format_due_text(
+        self, todo_item: dict, current_time_utc: Optional[datetime] = None
+    ) -> str:
         due_date_str = todo_item.get("dueDate")
         if not due_date_str:
             return "未设置截止时间"
@@ -185,7 +191,46 @@ class NotificationDialog(QDialog):
             due_date = datetime.fromisoformat(due_date_str.replace("Z", "+00:00"))
         except ValueError:
             return "截止时间格式错误"
-        return f"截止时间: {due_date.astimezone().strftime('%Y-%m-%d %H:%M')}"
+        if due_date.tzinfo is None:
+            due_date = due_date.astimezone()
+        if current_time_utc is None:
+            current_time_utc = datetime.now(timezone.utc)
+        elif current_time_utc.tzinfo is None:
+            current_time_utc = current_time_utc.replace(tzinfo=timezone.utc)
+        else:
+            current_time_utc = current_time_utc.astimezone(timezone.utc)
+
+        diff = due_date.astimezone(timezone.utc) - current_time_utc
+        duration_text = self._format_relative_duration(diff)
+        if diff.total_seconds() < 0:
+            relative_text = f"已超时 {duration_text}"
+        elif diff.total_seconds() > 0:
+            relative_text = f"还有 {duration_text}"
+        else:
+            relative_text = "刚刚到期"
+        absolute_text = due_date.astimezone().strftime("%Y-%m-%d %H:%M")
+        return f"截止时间: {absolute_text} · {relative_text}"
+
+    @staticmethod
+    def _format_relative_duration(diff: timedelta) -> str:
+        """沿用主列表计时的单位、取整与最多两段显示语义。"""
+
+        effective_diff = abs(diff)
+        days = effective_diff.days
+        secs_in_day = effective_diff.seconds
+        hours = secs_in_day // 3600
+        minutes = (secs_in_day % 3600) // 60
+        seconds = secs_in_day % 60
+        parts = []
+        if days > 0:
+            parts.append(f"{days}天")
+        if hours > 0:
+            parts.append(f"{hours}时")
+        if minutes > 0 and days == 0:
+            parts.append(f"{minutes}分")
+        if not parts and effective_diff.total_seconds() > 0:
+            parts.append(f"{seconds}秒")
+        return " ".join(parts[:2]) if parts else "刚刚"
 
     def _update_title(self) -> None:
         self.title_label.setText(f"{len(self._task_rows)} 个任务需要处理")
@@ -205,13 +250,6 @@ class NotificationDialog(QDialog):
     def task_ids(self) -> list[int]:
         return list(self._task_rows)
 
-    def selected_task_ids(self) -> list[int]:
-        return [
-            todo_id
-            for todo_id, row in self._task_rows.items()
-            if row["checkbox"].isChecked()
-        ]
-
     def remove_tasks(self, task_ids: list[int]) -> None:
         for todo_id in task_ids:
             row = self._task_rows.pop(int(todo_id), None)
@@ -223,11 +261,6 @@ class NotificationDialog(QDialog):
         self._adjust_size_and_position()
         if not self._task_rows:
             self.close()
-
-    def _emit_complete_requested(self) -> None:
-        selected_ids = self.selected_task_ids()
-        if selected_ids:
-            self.complete_requested.emit(selected_ids)
 
     def _apply_palette(self, palette: ThemeColors) -> None:
         self._palette = palette
@@ -245,34 +278,34 @@ class NotificationDialog(QDialog):
                 border-radius: 6px;
             }}
             QScrollArea {{ background-color: transparent; border: none; }}
-            QCheckBox {{ color: {palette.text_primary}; spacing: 8px; }}
             QPushButton {{
                 background-color: {palette.accent}; color: {palette.inverse_text}; border: none;
                 padding: 8px 12px; border-radius: 4px; font-size: 10pt;
             }}
             QPushButton:hover {{ background-color: {palette.accent_hover}; }}
-            QPushButton#snoozeDefaultButton, QPushButton#snoozeMenuButton {{
-                background-color: {palette.priority_medium};
-                color: {palette.inverse_text};
-                padding-top: 8px;
-                padding-bottom: 8px;
+            QPushButton:disabled {{
+                background-color: {palette.card_border}; color: {palette.text_secondary};
             }}
-            QPushButton#snoozeDefaultButton:hover, QPushButton#snoozeMenuButton:hover {{
+            QPushButton[notificationRowAction="true"] {{
+                padding: 5px 8px; font-size: 9pt;
+            }}
+            QPushButton[notificationSnoozeAction="true"] {{
+                background-color: {palette.priority_medium};
+            }}
+            QPushButton[notificationSnoozeAction="true"]:hover {{
                 background-color: {palette.due_warning};
             }}
-            QPushButton#snoozeDefaultButton {{
-                border-top-right-radius: 0px;
-                border-bottom-right-radius: 0px;
-                padding-left: 12px;
-                padding-right: 12px;
+            QPushButton[notificationIgnoreAction="true"] {{
+                background-color: {palette.due_critical};
             }}
-            QPushButton#snoozeMenuButton {{
-                border-top-left-radius: 0px;
-                border-bottom-left-radius: 0px;
-                padding-left: 6px;
-                padding-right: 6px;
+            QMenu {{
+                background-color: {palette.background}; color: {palette.text_primary};
+                border: 1px solid {palette.card_border}; padding: 4px;
             }}
-            QPushButton#snoozeMenuButton::menu-indicator {{ image: none; }}
+            QMenu::item {{ padding: 6px 16px; }}
+            QMenu::item:selected {{
+                background-color: {palette.accent}; color: {palette.inverse_text};
+            }}
             """
         )
         self.title_label.setStyleSheet(
@@ -291,24 +324,48 @@ class NotificationDialog(QDialog):
     def _on_theme_changed(self, palette: ThemeColors) -> None:
         self._apply_palette(palette)
 
-    def _emit_snooze_requested(self, duration: timedelta) -> None:
-        selected_ids = self.selected_task_ids()
-        if selected_ids:
-            self.snooze_requested.emit(selected_ids, duration)
+    def _build_snooze_menu(
+        self,
+        todo_ids: list[int],
+        parent: Optional[QWidget] = None,
+    ) -> QMenu:
+        menu = QMenu(parent or self)
+        menu.addAction(
+            "15分钟后",
+            lambda _checked=False: self.snooze_default(todo_ids),
+        )
+        menu.addAction(
+            "1小时后",
+            lambda _checked=False: self.snooze_1_hour(todo_ids),
+        )
+        menu.addAction(
+            "晚上8点",
+            lambda _checked=False: self.snooze_8pm(todo_ids),
+        )
+        menu.addAction(
+            "明天上午9点",
+            lambda _checked=False: self.snooze_tomorrow_9am(todo_ids),
+        )
+        return menu
 
-    def snooze_default(self) -> None:
-        self._emit_snooze_requested(timedelta(minutes=15))
+    def _emit_snooze_requested(
+        self, duration: timedelta, todo_ids: list[int]
+    ) -> None:
+        self.snooze_requested.emit(todo_ids, duration)
 
-    def snooze_1_hour(self) -> None:
-        self._emit_snooze_requested(timedelta(hours=1))
+    def snooze_default(self, todo_ids: list[int]) -> None:
+        self._emit_snooze_requested(timedelta(minutes=15), todo_ids)
 
-    def snooze_tomorrow_9am(self) -> None:
+    def snooze_1_hour(self, todo_ids: list[int]) -> None:
+        self._emit_snooze_requested(timedelta(hours=1), todo_ids)
+
+    def snooze_tomorrow_9am(self, todo_ids: list[int]) -> None:
         now = datetime.now().astimezone()
         tomorrow_date = now.date() + timedelta(days=1)
         target_dt = datetime.combine(tomorrow_date, time(9, 0), tzinfo=now.tzinfo)
-        self._emit_snooze_requested(target_dt - now)
+        self._emit_snooze_requested(target_dt - now, todo_ids)
 
-    def snooze_8pm(self) -> None:
+    def snooze_8pm(self, todo_ids: list[int]) -> None:
         now = datetime.now().astimezone()
         target_dt = datetime.combine(now.date(), time(20, 0), tzinfo=now.tzinfo)
         if target_dt <= now:
@@ -317,7 +374,7 @@ class NotificationDialog(QDialog):
                 time(20, 0),
                 tzinfo=now.tzinfo,
             )
-        self._emit_snooze_requested(target_dt - now)
+        self._emit_snooze_requested(target_dt - now, todo_ids)
 
 
 class TaskEditDialog(QDialog):

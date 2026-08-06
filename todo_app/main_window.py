@@ -608,6 +608,7 @@ class ModernTodoAppWindow(QMainWindow):
             self._notification_dialog = dialog
             dialog.complete_requested.connect(self._handle_notification_complete)
             dialog.snooze_requested.connect(self._handle_notification_snooze)
+            dialog.ignore_requested.connect(self._handle_notification_ignore)
             dialog.finished.connect(self._on_notification_dialog_finished)
             dialog.show()
         else:
@@ -650,6 +651,27 @@ class ModernTodoAppWindow(QMainWindow):
                 continue
             todo.update(build_snooze_update_fields(todo, snooze_duration))
             changed = True
+
+        self._remove_notification_tasks(list(requested_ids))
+        if changed:
+            save_todos(self.todos)
+            self.update_list_widget()
+
+    def _handle_notification_ignore(self, todo_ids: list[int]) -> None:
+        requested_ids = {int(todo_id) for todo_id in todo_ids}
+        changed = False
+        for todo in self.todos:
+            if todo.get("id") not in requested_ids:
+                continue
+            updated_fields = {
+                "dueDate": None,
+                "snoozeUntil": None,
+                "notifiedForReminder": False,
+                "notifiedForDue": False,
+            }
+            if any(todo.get(key) != value for key, value in updated_fields.items()):
+                todo.update(updated_fields)
+                changed = True
 
         self._remove_notification_tasks(list(requested_ids))
         if changed:
