@@ -6,7 +6,12 @@ import sys
 from PySide6.QtCore import QMessageLogContext, QtMsgType, qInstallMessageHandler
 from PySide6.QtWidgets import QApplication
 
-from .constants import APP_ICON_PATH, APP_NAME, APP_VERSION
+from .constants import (
+    APP_ICON_PATH,
+    APP_NAME,
+    APP_VERSION,
+    SETTINGS_ORGANIZATION,
+)
 from .fonts import apply_application_font
 from .main_window import ModernTodoAppWindow
 from .utils import get_icon
@@ -35,7 +40,7 @@ def run() -> None:
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
-    app.setOrganizationName("MyProductiveApp")
+    app.setOrganizationName(SETTINGS_ORGANIZATION)
     app.setWindowIcon(get_icon(APP_ICON_PATH, "TD"))
     app.setQuitOnLastWindowClosed(False)
     apply_application_font()

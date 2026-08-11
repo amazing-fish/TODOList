@@ -47,8 +47,12 @@ class ThemeColors:
 
 
 # --- 基本信息 ---
-APP_NAME = "桌面待办事项 v1"
-APP_VERSION = "2.1.0"
+APP_NAME = "桌面待办事项"
+APP_VERSION = "2.1.1"
+
+# QSettings 命名空间属于持久化兼容契约，不应随用户可见名称变化。
+SETTINGS_ORGANIZATION = "MyProductiveApp"
+SETTINGS_APPLICATION = "桌面待办事项 v1"
 
 # --- 文件资源 ---
 APP_ICON_PATH = "assets/icons/app_icon.svg"
@@ -191,6 +195,8 @@ DEFAULT_ICON_SIZE = QSize(16, 16)
 __all__ = [
     "APP_NAME",
     "APP_VERSION",
+    "SETTINGS_ORGANIZATION",
+    "SETTINGS_APPLICATION",
     "APP_ICON_PATH",
     "TRAY_ICON_PATH",
     "DONE_ICON_PATH",
