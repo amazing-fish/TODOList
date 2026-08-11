@@ -47,6 +47,8 @@ from .constants import (
     APP_VERSION,
     DUE_SOUND_PATH,
     REMINDER_SOUND_PATH,
+    SETTINGS_APPLICATION,
+    SETTINGS_ORGANIZATION,
     TASK_CARD_LIST_GAP,
 )
 from .dialogs import NotificationDialog, TaskEditDialog
@@ -174,7 +176,7 @@ class ModernTodoAppWindow(QMainWindow):
         super().__init__()
         self.todos: List[Dict] = load_todos()
         self._notification_dialog: Optional[NotificationDialog] = None
-        self.settings = QSettings("MyProductiveApp", APP_NAME)
+        self.settings = QSettings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION)
         self._quitting_app = False
 
         self.theme_manager = get_theme_manager()
