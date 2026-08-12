@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QDialog,
     QLabel,
     QPushButton,
+    QToolButton,
 )
 
 from todo_app.dialogs import NotificationDialog  # noqa: E402
@@ -97,11 +98,17 @@ class NotificationDialogTest(unittest.TestCase):
         dialog.ignore_requested.connect(ignored.append)
 
         complete_first = dialog.findChild(QPushButton, "notificationComplete_1")
-        snooze_second = dialog.findChild(QPushButton, "notificationSnooze_2")
+        snooze_second = dialog.findChild(QToolButton, "notificationSnooze_2")
         ignore_first = dialog.findChild(QPushButton, "notificationIgnore_1")
         self.assertIsNotNone(complete_first)
         self.assertIsNotNone(snooze_second)
         self.assertIsNotNone(ignore_first)
+        self.assertEqual(snooze_second.text(), "推迟 1 小时")
+        self.assertEqual(
+            snooze_second.popupMode(),
+            QToolButton.ToolButtonPopupMode.MenuButtonPopup,
+        )
+        self.assertIn("点击箭头", snooze_second.toolTip())
         self.assertEqual(ignore_first.text(), "忽略")
         self.assertIn("清除截止时间", ignore_first.toolTip())
         self.assertEqual(
@@ -110,15 +117,32 @@ class NotificationDialogTest(unittest.TestCase):
         )
 
         complete_first.click()
-        one_hour_action = next(
-            action for action in snooze_second.menu().actions() if action.text() == "1小时后"
-        )
-        one_hour_action.trigger()
+        snooze_second.click()
         ignore_first.click()
 
         self.assertEqual(completed, [[1]])
         self.assertEqual(snoozed, [([2], timedelta(hours=1))])
         self.assertEqual(ignored, [[1]])
+
+    def test_snooze_menu_keeps_alternative_duration_separate_from_primary(self) -> None:
+        dialog = NotificationDialog([(make_todo(1, "第一项"), True)])
+        self.addCleanup(dialog.close)
+        snoozed: list[tuple[list[int], timedelta]] = []
+        dialog.snooze_requested.connect(
+            lambda ids, duration: snoozed.append((ids, duration))
+        )
+
+        snooze_action = dialog.findChild(QToolButton, "notificationSnooze_1")
+        self.assertIsNotNone(snooze_action)
+        fifteen_minute_action = next(
+            action
+            for action in snooze_action.menu().actions()
+            if action.text() == "15分钟后"
+        )
+
+        fifteen_minute_action.trigger()
+
+        self.assertEqual(snoozed, [([1], timedelta(minutes=15))])
 
     def test_due_text_includes_absolute_and_relative_time(self) -> None:
         todo = make_todo(1, "相对时间")

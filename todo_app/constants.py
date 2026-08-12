@@ -48,7 +48,7 @@ class ThemeColors:
 
 # --- 基本信息 ---
 APP_NAME = "桌面待办事项"
-APP_VERSION = "2.1.1"
+APP_VERSION = "2.1.2"
 
 # QSettings 命名空间属于持久化兼容契约，不应随用户可见名称变化。
 SETTINGS_ORGANIZATION = "MyProductiveApp"
