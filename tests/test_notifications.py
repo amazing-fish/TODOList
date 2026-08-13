@@ -350,6 +350,40 @@ class NotificationBatchIntegrationTest(unittest.TestCase):
             self.assertEqual(len(FakeNotificationDialog.instances), 1)
             self.assertEqual(FakeNotificationDialog.instances[0].task_ids(), [1])
 
+    def test_idle_tick_with_100_tasks_skips_card_redraw_and_list_layout(self) -> None:
+        tasks = [make_todo(todo_id, f"空闲任务{todo_id}") for todo_id in range(100)]
+        for task in tasks:
+            task["dueDate"] = None
+
+        with (
+            patch("todo_app.main_window.load_todos", return_value=tasks),
+            patch("todo_app.main_window.save_todos") as save_mock,
+        ):
+            window = ModernTodoAppWindow()
+            window.master_timer.stop()
+            self.addCleanup(self._close_window, window)
+            cards = [
+                window.list_widget.itemWidget(window.list_widget.item(index))
+                for index in range(window.list_widget.count())
+            ]
+            self.assertEqual(len(cards), 100)
+            for card in cards:
+                card.update_text_display = MagicMock()
+                card._update_frame_background = MagicMock()
+            window._sync_todo_card_sizes = MagicMock()
+            window.update_list_widget = MagicMock()
+
+            with patch("todo_app.widgets.get_icon") as get_icon_mock:
+                window.tick_update()
+
+            save_mock.assert_not_called()
+            get_icon_mock.assert_not_called()
+            window._sync_todo_card_sizes.assert_not_called()
+            window.update_list_widget.assert_not_called()
+            for card in cards:
+                card.update_text_display.assert_not_called()
+                card._update_frame_background.assert_not_called()
+
     def test_closed_notification_dialog_is_deleted_from_parent(self) -> None:
         task = make_todo(1, "关闭后释放")
         with (

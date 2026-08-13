@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -72,6 +73,18 @@ from .theme import ThemeColors, get_theme_manager
 _TASK_LINE_BREAKS = re.compile(r"\r\n|\r|\n")
 
 
+@dataclass(frozen=True)
+class _TimerPresentation:
+    """一次计时刷新最终需要呈现的可比较状态。"""
+
+    text: str
+    color: str
+    point_size: int = 9
+    bold: bool = False
+    italic: bool = False
+    strikeout: bool = False
+
+
 def _build_action_icon(kind: str, color: str) -> QIcon:
     """绘制不依赖系统字体或外部资源的轻量操作图标。"""
 
@@ -138,6 +151,8 @@ class _ElidedLabel(QLabel):
         return self._full_text
 
     def set_full_text(self, text: str) -> None:
+        if self._full_text == text:
+            return
         self._full_text = text
         self.updateGeometry()
         self.refresh_elision()
@@ -579,6 +594,8 @@ class TodoItemWidget(QFrame):
         self._list_spacing = 0
         self._layout_result: Optional[TaskCardLayout] = None
         self._applying_layout = False
+        self._rendered_completed_state: Optional[bool] = None
+        self._rendered_timer_state: Optional[_TimerPresentation] = None
         self._build_ui()
         self.apply_palette(self._palette)
 
@@ -598,10 +615,6 @@ class TodoItemWidget(QFrame):
         self.complete_button = QPushButton()
         self.complete_button.setObjectName("TodoCompleteButton")
         self.complete_button.setCheckable(True)
-        self.complete_button.setChecked(self.todo_item.get("completed", False))
-        icon_path = DONE_ICON_PATH if self.todo_item.get("completed", False) else INCOMPLETE_ICON_PATH
-        fallback_char = "✓" if self.todo_item.get("completed", False) else "○"
-        self.complete_button.setIcon(get_icon(icon_path, fallback_char))
         self.complete_button.setIconSize(QSize(20, 20))
         self.complete_button.setToolTip("标记为完成/未完成")
         self.complete_button.clicked.connect(self._toggle_complete)
@@ -628,9 +641,6 @@ class TodoItemWidget(QFrame):
         self.task_text_label.setSizePolicy(text_policy)
         font = self.task_text_label.font()
         font.setPointSize(11)
-        is_completed = self.todo_item.get("completed", False)
-        font.setBold(not is_completed)
-        font.setStrikeOut(is_completed)
         self.task_text_label.setFont(font)
         self.task_details_popup = _TaskDetailsPopup(self)
         self.task_text_label.details_requested.connect(self._show_task_details)
@@ -699,34 +709,20 @@ class TodoItemWidget(QFrame):
         self.actions_container.setFixedWidth(TASK_ACTION_AREA_WIDTH)
         self.actions_container.hide()
 
-        self.update_timer_display(datetime.now(timezone.utc))
-        self.update_text_display()
-
     def apply_palette(self, palette: ThemeColors) -> None:
         """应用指定主题配色。"""
 
         self._palette = palette
         self.edit_button.setIcon(_build_action_icon("edit", palette.action_icon))
         self.delete_button.setIcon(_build_action_icon("delete", palette.action_icon))
-        self._update_frame_background()
-        is_completed = self.todo_item.get("completed", False)
-        font = self.task_text_label.font()
-        font.setBold(not is_completed)
-        font.setStrikeOut(is_completed)
-        self.task_text_label.setFont(font)
-        text_decoration = "text-decoration: line-through;" if is_completed else "text-decoration: none;"
-        text_color = palette.text_completed if is_completed else palette.text_primary
-        self.task_text_label.setStyleSheet(f"color: {text_color}; {text_decoration}")
         self.task_details_popup.apply_palette(palette)
 
         self.priority_label.setText(self._priority_badge_html(self.todo_item.get("priority", "中")))
         self.priority_label.setTextFormat(Qt.TextFormat.RichText)
 
-        timer_font = self.timer_display_label.font()
-        timer_font.setPointSize(9)
-        timer_font.setStrikeOut(is_completed)
-        self.timer_display_label.setFont(timer_font)
-        self.timer_display_label.setStyleSheet(f"color: {palette.text_secondary};")
+        # 主题色即使与上次恰好相同，也需要重新应用完整呈现状态。
+        self._rendered_completed_state = None
+        self._rendered_timer_state = None
         self.update_timer_display(datetime.now(timezone.utc))
 
     def _update_frame_background(self) -> None:
@@ -1074,90 +1070,153 @@ class TodoItemWidget(QFrame):
     def _set_timer_text(self, text: str) -> None:
         self.timer_display_label.set_full_text(text)
 
-    def update_timer_display(self, current_time_utc: datetime) -> None:
-        is_completed = self.todo_item.get("completed", False)
+    def _apply_completed_presentation(self, is_completed: bool) -> bool:
+        """只在完成状态变化时更新静态卡片控件。"""
+
+        if self._rendered_completed_state == is_completed:
+            return False
+
         self.complete_button.setChecked(is_completed)
         icon_path = DONE_ICON_PATH if is_completed else INCOMPLETE_ICON_PATH
         fallback_char = "✓" if is_completed else "○"
         self.complete_button.setIcon(get_icon(icon_path, fallback_char))
         self._update_frame_background()
 
-        text_color = self._palette.text_completed if is_completed else self._palette.text_primary
-        text_decoration = "text-decoration: line-through;" if is_completed else "text-decoration: none;"
-        self.task_text_label.setStyleSheet(f"color: {text_color}; {text_decoration}")
+        text_color = (
+            self._palette.text_completed
+            if is_completed
+            else self._palette.text_primary
+        )
+        text_decoration = (
+            "text-decoration: line-through;"
+            if is_completed
+            else "text-decoration: none;"
+        )
+        self.task_text_label.setStyleSheet(
+            f"color: {text_color}; {text_decoration}"
+        )
         font = self.task_text_label.font()
         font.setBold(not is_completed)
         font.setStrikeOut(is_completed)
         self.task_text_label.setFont(font)
-        timer_font = self.timer_display_label.font()
-        timer_font.setPointSize(9)
-        timer_font.setBold(False)
-        timer_font.setItalic(False)
-        timer_font.setStrikeOut(is_completed)
-        self.timer_display_label.setFont(timer_font)
-        base_timer_color = self._palette.text_completed if is_completed else self._palette.text_secondary
-        self.timer_display_label.setStyleSheet(f"color: {base_timer_color};")
+        self._rendered_completed_state = is_completed
+        return True
+
+    def _timer_presentation(
+        self,
+        current_time_utc: datetime,
+        *,
+        is_completed: bool,
+    ) -> _TimerPresentation:
+        """计算计时标签状态，不触发 Qt 重绘。"""
 
         if is_completed:
-            self._set_timer_text("已完成")
-            timer_font.setItalic(True)
-            self.timer_display_label.setFont(timer_font)
-            self.timer_display_label.setStyleSheet(f"color: {self._palette.text_completed};")
-            self.update_text_display()
-            return
+            return _TimerPresentation(
+                text="已完成",
+                color=self._palette.text_completed,
+                italic=True,
+                strikeout=True,
+            )
 
         snooze_until_str = self.todo_item.get("snoozeUntil")
         if snooze_until_str:
             try:
-                snooze_until_dt = datetime.fromisoformat(snooze_until_str.replace("Z", "+00:00"))
+                snooze_until_dt = datetime.fromisoformat(
+                    snooze_until_str.replace("Z", "+00:00")
+                )
                 if snooze_until_dt > current_time_utc:
-                    self._set_timer_text(
-                        f"推迟: {self._format_timedelta(snooze_until_dt - current_time_utc)}"
+                    return _TimerPresentation(
+                        text=(
+                            "推迟: "
+                            + self._format_timedelta(
+                                snooze_until_dt - current_time_utc
+                            )
+                        ),
+                        color=self._palette.snooze_badge,
                     )
-                    self.timer_display_label.setStyleSheet(
-                        f"color: {self._palette.snooze_badge};"
-                    )
-                    self.update_text_display()
-                    return
             except ValueError:
-                print(f"任务 '{self.todo_item.get('text', '')}' 的推迟日期格式错误: {snooze_until_str}")
+                print(
+                    f"任务 '{self.todo_item.get('text', '')}' 的推迟日期格式错误: "
+                    f"{snooze_until_str}"
+                )
                 self.todo_item["snoozeUntil"] = None
 
         due_date_str = self.todo_item.get("dueDate")
         if not due_date_str:
-            self._set_timer_text("无截止日期")
-            self.timer_display_label.setStyleSheet(
-                f"color: {self._palette.text_secondary};"
+            return _TimerPresentation(
+                text="无截止日期",
+                color=self._palette.text_secondary,
             )
-            self.update_text_display()
-            return
 
         try:
-            due_date_dt = datetime.fromisoformat(due_date_str.replace("Z", "+00:00"))
+            due_date_dt = datetime.fromisoformat(
+                due_date_str.replace("Z", "+00:00")
+            )
         except ValueError:
-            self._set_timer_text("日期格式错误!")
-            timer_font.setBold(True)
-            self.timer_display_label.setFont(timer_font)
-            self.timer_display_label.setStyleSheet(f"color: {self._palette.due_critical};")
-            self.update_text_display()
-            return
+            return _TimerPresentation(
+                text="日期格式错误!",
+                color=self._palette.due_critical,
+                bold=True,
+            )
 
         diff = due_date_dt - current_time_utc
         time_left_str = self._format_timedelta(diff)
         if diff.total_seconds() <= 0:
-            self._set_timer_text(f"已到期 ({time_left_str.replace('-', '')})")
-            timer_font.setPointSize(10)
-            timer_font.setBold(True)
-            self.timer_display_label.setFont(timer_font)
-            self.timer_display_label.setStyleSheet(f"color: {self._palette.due_critical};")
-        else:
-            self._set_timer_text(f"剩余: {time_left_str}")
-            color = self._palette.due_warning if diff.total_seconds() < 86400 else self._palette.timer_positive
-            timer_font.setBold(True)
-            self.timer_display_label.setFont(timer_font)
-            self.timer_display_label.setStyleSheet(f"color: {color};")
+            return _TimerPresentation(
+                text=f"已到期 ({time_left_str.replace('-', '')})",
+                color=self._palette.due_critical,
+                point_size=10,
+                bold=True,
+            )
 
-        self.update_text_display()
+        color = (
+            self._palette.due_warning
+            if diff.total_seconds() < 86400
+            else self._palette.timer_positive
+        )
+        return _TimerPresentation(
+            text=f"剩余: {time_left_str}",
+            color=color,
+            bold=True,
+        )
+
+    def _apply_timer_presentation(
+        self,
+        presentation: _TimerPresentation,
+    ) -> bool:
+        """仅在最终文本或样式变化时更新计时标签。"""
+
+        if self._rendered_timer_state == presentation:
+            return False
+
+        self._set_timer_text(presentation.text)
+        timer_font = self.timer_display_label.font()
+        timer_font.setPointSize(presentation.point_size)
+        timer_font.setBold(presentation.bold)
+        timer_font.setItalic(presentation.italic)
+        timer_font.setStrikeOut(presentation.strikeout)
+        self.timer_display_label.setFont(timer_font)
+        self.timer_display_label.setStyleSheet(
+            f"color: {presentation.color};"
+        )
+        self._rendered_timer_state = presentation
+        return True
+
+    def update_timer_display(self, current_time_utc: datetime) -> bool:
+        """刷新有变化的呈现状态，并返回是否触发了卡片重排。"""
+
+        is_completed = self.todo_item.get("completed", False)
+        completed_changed = self._apply_completed_presentation(is_completed)
+        timer_changed = self._apply_timer_presentation(
+            self._timer_presentation(
+                current_time_utc,
+                is_completed=is_completed,
+            )
+        )
+        presentation_changed = completed_changed or timer_changed
+        if presentation_changed:
+            self.update_text_display()
+        return presentation_changed
 
     def _format_timedelta(self, diff: timedelta) -> str:
         is_past = diff.total_seconds() < 0
