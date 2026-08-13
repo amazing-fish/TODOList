@@ -473,6 +473,108 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
                 self.assertEqual(widget.timer_display_label.text(), expected_text)
                 self.assertEqual(widget.timer_display_label.toolTip(), "")
 
+    def test_card_initialization_performs_one_full_timer_render(self) -> None:
+        class CountingTodoItemWidget(TodoItemWidget):
+            def update_timer_display(self, current_time_utc):
+                self.timer_render_count = getattr(self, "timer_render_count", 0) + 1
+                return super().update_timer_display(current_time_utc)
+
+            def update_text_display(self):
+                self.layout_refresh_count = getattr(
+                    self,
+                    "layout_refresh_count",
+                    0,
+                ) + 1
+                return super().update_text_display()
+
+        widget = CountingTodoItemWidget(
+            {
+                "id": 1,
+                "text": "初始化一次",
+                "priority": "中",
+                "completed": False,
+                "dueDate": None,
+                "snoozeUntil": None,
+            }
+        )
+        self.addCleanup(widget.close)
+
+        self.assertEqual(widget.timer_render_count, 1)
+        self.assertEqual(widget.layout_refresh_count, 1)
+        self.assertEqual(widget.timer_display_label.full_text, "无截止日期")
+
+    def test_unchanged_timer_state_skips_all_qt_presentation_writes(self) -> None:
+        now = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
+        widget = TodoItemWidget(
+            {
+                "id": 1,
+                "text": "空闲任务",
+                "priority": "中",
+                "completed": False,
+                "dueDate": None,
+                "snoozeUntil": None,
+            }
+        )
+        self.addCleanup(widget.close)
+
+        with (
+            patch.object(widget.complete_button, "setChecked") as set_checked,
+            patch.object(widget.complete_button, "setIcon") as set_icon,
+            patch.object(widget, "_update_frame_background") as update_frame,
+            patch.object(widget.task_text_label, "setStyleSheet") as set_task_style,
+            patch.object(widget.task_text_label, "setFont") as set_task_font,
+            patch.object(widget.timer_display_label, "set_full_text") as set_timer_text,
+            patch.object(widget.timer_display_label, "setStyleSheet") as set_timer_style,
+            patch.object(widget.timer_display_label, "setFont") as set_timer_font,
+            patch.object(widget, "update_text_display") as refresh_layout,
+        ):
+            changed = widget.update_timer_display(now)
+
+        self.assertFalse(changed)
+        for qt_write in (
+            set_checked,
+            set_icon,
+            update_frame,
+            set_task_style,
+            set_task_font,
+            set_timer_text,
+            set_timer_style,
+            set_timer_font,
+            refresh_layout,
+        ):
+            qt_write.assert_not_called()
+
+    def test_completion_transition_renders_once_then_becomes_idle(self) -> None:
+        now = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
+        widget = TodoItemWidget(
+            {
+                "id": 1,
+                "text": "完成状态切换",
+                "priority": "中",
+                "completed": False,
+                "dueDate": None,
+                "snoozeUntil": None,
+            }
+        )
+        self.addCleanup(widget.close)
+        widget.todo_item["completed"] = True
+
+        with (
+            patch.object(widget.complete_button, "setIcon") as set_icon,
+            patch.object(widget, "_update_frame_background") as update_frame,
+            patch.object(widget, "update_text_display") as refresh_layout,
+        ):
+            first_changed = widget.update_timer_display(now)
+            second_changed = widget.update_timer_display(now + timedelta(seconds=1))
+
+        self.assertTrue(first_changed)
+        self.assertFalse(second_changed)
+        self.assertTrue(widget.complete_button.isChecked())
+        self.assertEqual(widget.timer_display_label.full_text, "已完成")
+        self.assertEqual(set_icon.call_count, 1)
+        self.assertEqual(update_frame.call_count, 1)
+        self.assertEqual(refresh_layout.call_count, 1)
+
     def _assert_each_logical_line_fits(self, widget: TodoItemWidget) -> None:
         label = widget.task_text_label
         self.assertFalse(label.wordWrap())

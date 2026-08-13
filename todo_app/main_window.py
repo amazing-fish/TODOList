@@ -543,8 +543,6 @@ class ModernTodoAppWindow(QMainWindow):
                 item_widget.todo_item.update(original_ref)
             item_widget.update_timer_display(now_utc)
 
-        self._sync_todo_card_sizes()
-
         if items_changed:
             save_todos(self.todos)
             self.update_list_widget()
@@ -942,7 +940,6 @@ class ModernTodoAppWindow(QMainWindow):
         self._empty_placeholder_widget = None
         self._empty_placeholder_label = None
 
-        current_time_utc = datetime.now(timezone.utc)
         for todo_data in processed:
             list_item = QListWidgetItem(self.list_widget)
             item_widget = TodoItemWidget(todo_data.copy(), palette=self._palette)
@@ -954,7 +951,6 @@ class ModernTodoAppWindow(QMainWindow):
             list_item.setSizeHint(QSize(0, item_height))
             self.list_widget.addItem(list_item)
             self.list_widget.setItemWidget(list_item, item_widget)
-            item_widget.update_timer_display(current_time_utc)
 
         self._sync_todo_card_sizes()
 
