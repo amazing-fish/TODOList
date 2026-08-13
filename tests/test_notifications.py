@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent  # noqa: E402
+from PySide6.QtCore import QEvent, Qt  # noqa: E402
 from PySide6.QtGui import QCloseEvent  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QDialog,
     QLabel,
     QPushButton,
+    QStyleOptionToolButton,
     QToolButton,
 )
 
@@ -104,6 +105,17 @@ class NotificationDialogTest(unittest.TestCase):
         self.assertIsNotNone(snooze_second)
         self.assertIsNotNone(ignore_first)
         self.assertEqual(snooze_second.text(), "推迟 1 小时")
+        self.assertEqual(
+            snooze_second.toolButtonStyle(),
+            Qt.ToolButtonStyle.ToolButtonTextOnly,
+        )
+        style_option = QStyleOptionToolButton()
+        snooze_second.initStyleOption(style_option)
+        self.assertEqual(
+            style_option.toolButtonStyle,
+            Qt.ToolButtonStyle.ToolButtonTextOnly,
+        )
+        self.assertEqual(style_option.text, "推迟 1 小时")
         self.assertEqual(
             snooze_second.popupMode(),
             QToolButton.ToolButtonPopupMode.MenuButtonPopup,
