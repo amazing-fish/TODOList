@@ -128,7 +128,7 @@ class NotificationDialog(QDialog):
             )
 
             snooze_action = QToolButton()
-            snooze_action.setText("推迟 1 小时")
+            snooze_action.setText("推迟1h")
             snooze_action.setToolButtonStyle(
                 Qt.ToolButtonStyle.ToolButtonTextOnly
             )

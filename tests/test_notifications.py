@@ -104,7 +104,7 @@ class NotificationDialogTest(unittest.TestCase):
         self.assertIsNotNone(complete_first)
         self.assertIsNotNone(snooze_second)
         self.assertIsNotNone(ignore_first)
-        self.assertEqual(snooze_second.text(), "推迟 1 小时")
+        self.assertEqual(snooze_second.text(), "推迟1h")
         self.assertEqual(
             snooze_second.toolButtonStyle(),
             Qt.ToolButtonStyle.ToolButtonTextOnly,
@@ -115,7 +115,7 @@ class NotificationDialogTest(unittest.TestCase):
             style_option.toolButtonStyle,
             Qt.ToolButtonStyle.ToolButtonTextOnly,
         )
-        self.assertEqual(style_option.text, "推迟 1 小时")
+        self.assertEqual(style_option.text, "推迟1h")
         self.assertEqual(
             snooze_second.popupMode(),
             QToolButton.ToolButtonPopupMode.MenuButtonPopup,
