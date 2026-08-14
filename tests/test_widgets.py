@@ -859,6 +859,169 @@ class TodoListCardIntegrationTest(unittest.TestCase):
                 self.assertLessEqual(abs(left_margin - right_margin), 1)
                 self.assertFalse(window.list_widget.horizontalScrollBar().isVisible())
 
+    def test_differential_add_and_delete_reuse_unchanged_cards(self) -> None:
+        now = datetime(2026, 8, 14, 2, 0, tzinfo=timezone.utc)
+        todos = [
+            {
+                "id": todo_id,
+                "text": f"任务{todo_id}",
+                "priority": "中",
+                "completed": False,
+                "dueDate": (now + timedelta(days=todo_id)).isoformat(),
+                "createdAt": (now - timedelta(minutes=todo_id)).isoformat(),
+                "snoozeUntil": None,
+            }
+            for todo_id in (1, 2, 3)
+        ]
+        window = self._create_window(todos=todos)
+        original_items = dict(window._todo_items_by_id)
+        original_widgets = dict(window._todo_widgets_by_id)
+        new_todo = {
+            **todos[0],
+            "id": 4,
+            "text": "新增任务",
+            "createdAt": (now + timedelta(minutes=1)).isoformat(),
+        }
+
+        with patch.object(window.list_widget, "clear") as clear_mock:
+            window.todos.append(new_todo)
+            window.update_list_widget(changed_ids={4})
+            window.todos = [todo for todo in window.todos if todo["id"] != 2]
+            window.update_list_widget(changed_ids={2})
+
+        clear_mock.assert_not_called()
+        self.assertEqual(
+            [
+                window.list_widget.itemWidget(window.list_widget.item(row)).todo_item[
+                    "id"
+                ]
+                for row in range(window.list_widget.count())
+            ],
+            [4, 1, 3],
+        )
+        for todo_id in (1, 3):
+            with self.subTest(todo_id=todo_id):
+                self.assertIs(window._todo_items_by_id[todo_id], original_items[todo_id])
+                self.assertIs(
+                    window._todo_widgets_by_id[todo_id],
+                    original_widgets[todo_id],
+                )
+        self.assertNotIn(2, window._todo_items_by_id)
+        self.assertNotIn(2, window._todo_widgets_by_id)
+
+    def test_differential_edit_moves_only_target_card(self) -> None:
+        now = datetime(2026, 8, 14, 2, 0, tzinfo=timezone.utc)
+        todos = [
+            {
+                "id": 1,
+                "text": "高优先级",
+                "priority": "高",
+                "completed": False,
+                "dueDate": (now + timedelta(days=1)).isoformat(),
+                "createdAt": now.isoformat(),
+                "snoozeUntil": None,
+            },
+            {
+                "id": 2,
+                "text": "中优先级",
+                "priority": "中",
+                "completed": False,
+                "dueDate": (now + timedelta(days=2)).isoformat(),
+                "createdAt": now.isoformat(),
+                "snoozeUntil": None,
+            },
+            {
+                "id": 3,
+                "text": "低优先级",
+                "priority": "低",
+                "completed": False,
+                "dueDate": (now + timedelta(hours=1)).isoformat(),
+                "createdAt": now.isoformat(),
+                "snoozeUntil": None,
+            },
+        ]
+        window = self._create_window(todos=todos)
+        window.sort_combo.setCurrentText("优先级 (高->低)")
+        original_widgets = dict(window._todo_widgets_by_id)
+        original_items = dict(window._todo_items_by_id)
+
+        with patch.object(window.list_widget, "clear") as clear_mock:
+            todos[2].update({"text": "提升后的任务", "priority": "高"})
+            window.update_list_widget(changed_ids={3})
+        self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self.app.processEvents()
+
+        clear_mock.assert_not_called()
+        self.assertIs(window._todo_widgets_by_id[3], original_widgets[3])
+        self.assertIs(window._todo_items_by_id[3], original_items[3])
+        self.assertEqual(window._todo_widgets_by_id[3].original_text, "提升后的任务")
+        self.assertEqual(window._todo_widgets_by_id[3].todo_item["priority"], "高")
+        self.assertEqual(window.list_widget.row(original_items[3]), 0)
+        for todo_id in (1, 2):
+            self.assertIs(window._todo_widgets_by_id[todo_id], original_widgets[todo_id])
+            self.assertIs(window._todo_items_by_id[todo_id], original_items[todo_id])
+
+    def test_completion_filter_removes_and_restores_only_target_card(self) -> None:
+        window = self._create_window(todo_count=3)
+        window.filter_combo.setCurrentText("未完成")
+        stable_widget = window._todo_widgets_by_id[2]
+        stable_item = window._todo_items_by_id[2]
+
+        with (
+            patch.object(window.list_widget, "clear") as clear_mock,
+            patch("todo_app.main_window.save_todos"),
+        ):
+            window.toggle_complete_todo(1)
+            self.assertNotIn(1, window._todo_widgets_by_id)
+            window.toggle_complete_todo(1)
+
+        clear_mock.assert_not_called()
+        self.assertIn(1, window._todo_widgets_by_id)
+        self.assertIs(window._todo_widgets_by_id[2], stable_widget)
+        self.assertIs(window._todo_items_by_id[2], stable_item)
+        self.assertFalse(window._todo_widgets_by_id[1].todo_item["completed"])
+
+    def test_differential_insert_preserves_visible_scroll_anchor(self) -> None:
+        now = datetime(2026, 8, 14, 2, 0, tzinfo=timezone.utc)
+        todos = [
+            {
+                "id": todo_id,
+                "text": f"滚动任务{todo_id}",
+                "priority": "中",
+                "completed": False,
+                "dueDate": (now + timedelta(days=1)).isoformat(),
+                "createdAt": (now - timedelta(minutes=todo_id)).isoformat(),
+                "snoozeUntil": None,
+            }
+            for todo_id in range(1, 21)
+        ]
+        window = self._create_window(todos=todos)
+        window.resize(420, 560)
+        window.show()
+        self._settle_list_layout(window)
+        scrollbar = window.list_widget.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum() // 2)
+        self.app.processEvents()
+        anchor_id, anchor_top, _ = window._capture_scroll_anchor()
+        self.assertIsNotNone(anchor_id)
+
+        new_todo = {
+            **todos[0],
+            "id": 21,
+            "text": "顶部新增任务",
+            "createdAt": (now + timedelta(minutes=1)).isoformat(),
+        }
+        with patch.object(window.list_widget, "clear") as clear_mock:
+            window.todos.append(new_todo)
+            window.update_list_widget(changed_ids={21})
+        self.app.processEvents()
+
+        clear_mock.assert_not_called()
+        anchor_item = window._todo_items_by_id[anchor_id]
+        restored_top = window.list_widget.visualItemRect(anchor_item).top()
+        self.assertLessEqual(abs(restored_top - anchor_top), 1)
+        self.assertGreater(scrollbar.value(), 0)
+
     def test_per_line_elision_tracks_viewport_across_rapid_resizes(self) -> None:
         now = datetime.now(timezone.utc)
         multiline_text = (

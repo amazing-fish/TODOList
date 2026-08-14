@@ -505,6 +505,9 @@ class NotificationBatchIntegrationTest(unittest.TestCase):
             self.assertEqual(dialog.task_ids(), [3])
             self.assertEqual(save_mock.call_count, 1)
             self.assertEqual(window.update_list_widget.call_count, 1)
+            window.update_list_widget.assert_called_once_with(
+                changed_ids={1, 2}
+            )
 
             window.toggle_complete_todo(3)
             self.assertEqual(dialog.task_ids(), [])
@@ -534,6 +537,7 @@ class NotificationBatchIntegrationTest(unittest.TestCase):
             self.assertEqual(dialog.task_ids(), [1])
             self.assertEqual(save_mock.call_count, 1)
             self.assertEqual(window.update_list_widget.call_count, 1)
+            window.update_list_widget.assert_called_once_with(changed_ids={2})
 
     def test_tasks_can_be_snoozed_independently_with_different_durations(self) -> None:
         first = make_todo(1, "任务1")
@@ -562,6 +566,10 @@ class NotificationBatchIntegrationTest(unittest.TestCase):
             self.assertEqual(dialog.task_ids(), [])
             self.assertEqual(save_mock.call_count, 2)
             self.assertEqual(window.update_list_widget.call_count, 2)
+            self.assertEqual(
+                [call.kwargs for call in window.update_list_widget.call_args_list],
+                [{"changed_ids": {1}}, {"changed_ids": {2}}],
+            )
 
     def test_ignore_clears_schedule_but_preserves_task_and_preference(self) -> None:
         task = make_todo(1, "保留但清除时间")
@@ -601,6 +609,7 @@ class NotificationBatchIntegrationTest(unittest.TestCase):
             self.assertEqual(dialog.task_ids(), [])
             self.assertEqual(save_mock.call_count, 1)
             self.assertEqual(window.update_list_widget.call_count, 1)
+            window.update_list_widget.assert_called_once_with(changed_ids={1})
 
             window.tick_update()
 

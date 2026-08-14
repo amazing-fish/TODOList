@@ -27,7 +27,7 @@ class ApplicationIdentityTest(unittest.TestCase):
 
     def test_visible_identity_targets_v2_without_changing_settings_namespace(self) -> None:
         self.assertEqual(APP_NAME, "桌面待办事项")
-        self.assertEqual(APP_VERSION, "2.1.3")
+        self.assertEqual(APP_VERSION, "2.1.4")
         self.assertNotIn("v1", APP_NAME)
         self.assertEqual(SETTINGS_ORGANIZATION, "MyProductiveApp")
         self.assertEqual(SETTINGS_APPLICATION, "桌面待办事项 v1")
