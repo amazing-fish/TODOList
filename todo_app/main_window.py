@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 from textwrap import dedent
 
 from PySide6.QtCore import (
@@ -192,6 +192,9 @@ class ModernTodoAppWindow(QMainWindow):
         self._empty_placeholder_item: Optional[QListWidgetItem] = None
         self._empty_placeholder_widget: Optional[QWidget] = None
         self._empty_placeholder_label: Optional[QLabel] = None
+        self._todo_items_by_id: dict[int, QListWidgetItem] = {}
+        self._todo_widgets_by_id: dict[int, TodoItemWidget] = {}
+        self._reconciling_todo_list = False
         self._syncing_todo_card_sizes = False
 
         self._build_ui()
@@ -374,7 +377,8 @@ class ModernTodoAppWindow(QMainWindow):
             right_gutter,
             margins.bottom(),
         )
-        self._sync_todo_card_sizes()
+        if not self._reconciling_todo_list:
+            self._sync_todo_card_sizes()
 
     @staticmethod
     def _build_add_icon(color: str) -> QIcon:
@@ -507,7 +511,7 @@ class ModernTodoAppWindow(QMainWindow):
     # --- 主循环刷新 ---
     def tick_update(self) -> None:
         now_utc = datetime.now(timezone.utc)
-        items_changed = False
+        changed_ids: set[int] = set()
         notification_requests: list[tuple[dict, bool]] = []
         for original_ref in self.todos:
             snooze_until = original_ref.get("snoozeUntil")
@@ -521,14 +525,14 @@ class ModernTodoAppWindow(QMainWindow):
                                 "notifiedForDue": False,
                             }
                         )
-                        items_changed = True
+                        changed_ids.add(original_ref["id"])
                 except ValueError:
                     original_ref["snoozeUntil"] = None
-                    items_changed = True
+                    changed_ids.add(original_ref["id"])
             notification_request = self._check_for_notification(original_ref, now_utc)
             if notification_request:
                 notification_requests.append(notification_request)
-                items_changed = True
+                changed_ids.add(original_ref["id"])
 
         todos_by_id = {todo.get("id"): todo for todo in self.todos}
         for index in range(self.list_widget.count()):
@@ -539,13 +543,16 @@ class ModernTodoAppWindow(QMainWindow):
             if not isinstance(item_widget, TodoItemWidget):
                 continue
             original_ref = todos_by_id.get(item_widget.todo_item.get("id"))
-            if original_ref:
-                item_widget.todo_item.update(original_ref)
-            item_widget.update_timer_display(now_utc)
+            if original_ref is None:
+                continue
+            item_widget.update_todo(
+                original_ref,
+                current_time_utc=now_utc,
+            )
 
-        if items_changed:
+        if changed_ids:
             save_todos(self.todos)
-            self.update_list_widget()
+            self.update_list_widget(changed_ids=changed_ids)
         if notification_requests:
             self._show_notification_batch(notification_requests)
 
@@ -622,7 +629,7 @@ class ModernTodoAppWindow(QMainWindow):
 
     def _handle_notification_complete(self, todo_ids: list[int]) -> None:
         requested_ids = {int(todo_id) for todo_id in todo_ids}
-        changed = False
+        changed_ids: set[int] = set()
         for todo in self.todos:
             if todo.get("id") not in requested_ids or todo.get("completed", False):
                 continue
@@ -634,32 +641,32 @@ class ModernTodoAppWindow(QMainWindow):
                     "notifiedForDue": True,
                 }
             )
-            changed = True
+            changed_ids.add(todo["id"])
 
         self._remove_notification_tasks(list(requested_ids))
-        if changed:
+        if changed_ids:
             save_todos(self.todos)
-            self.update_list_widget()
+            self.update_list_widget(changed_ids=changed_ids)
 
     def _handle_notification_snooze(
         self, todo_ids: list[int], snooze_duration: timedelta
     ) -> None:
         requested_ids = {int(todo_id) for todo_id in todo_ids}
-        changed = False
+        changed_ids: set[int] = set()
         for todo in self.todos:
             if todo.get("id") not in requested_ids or todo.get("completed", False):
                 continue
             todo.update(build_snooze_update_fields(todo, snooze_duration))
-            changed = True
+            changed_ids.add(todo["id"])
 
         self._remove_notification_tasks(list(requested_ids))
-        if changed:
+        if changed_ids:
             save_todos(self.todos)
-            self.update_list_widget()
+            self.update_list_widget(changed_ids=changed_ids)
 
     def _handle_notification_ignore(self, todo_ids: list[int]) -> None:
         requested_ids = {int(todo_id) for todo_id in todo_ids}
-        changed = False
+        changed_ids: set[int] = set()
         for todo in self.todos:
             if todo.get("id") not in requested_ids:
                 continue
@@ -671,12 +678,12 @@ class ModernTodoAppWindow(QMainWindow):
             }
             if any(todo.get(key) != value for key, value in updated_fields.items()):
                 todo.update(updated_fields)
-                changed = True
+                changed_ids.add(todo["id"])
 
         self._remove_notification_tasks(list(requested_ids))
-        if changed:
+        if changed_ids:
             save_todos(self.todos)
-            self.update_list_widget()
+            self.update_list_widget(changed_ids=changed_ids)
 
     def _remove_notification_tasks(self, todo_ids: list[int]) -> None:
         if self._notification_dialog is not None:
@@ -814,7 +821,7 @@ class ModernTodoAppWindow(QMainWindow):
                 }
                 self.todos.append(new_todo)
                 save_todos(self.todos)
-                self.update_list_widget()
+                self.update_list_widget(changed_ids={new_id})
         finally:
             if self._add_task_dialog is dialog:
                 self._add_task_dialog = None
@@ -849,7 +856,7 @@ class ModernTodoAppWindow(QMainWindow):
                     break
 
             save_todos(self.todos)
-            self.update_list_widget()
+            self.update_list_widget(changed_ids={normalized_id})
 
     @Slot(object)
     def handle_delete_request(self, todo_id: object) -> None:
@@ -879,7 +886,7 @@ class ModernTodoAppWindow(QMainWindow):
             self.todos = [t for t in self.todos if t.get("id") != normalized_id]
             if len(self.todos) < original_len:
                 save_todos(self.todos)
-                self.update_list_widget()
+                self.update_list_widget(changed_ids={normalized_id})
             else:
                 print(f"警告: 删除任务时未找到ID {normalized_id}。")
 
@@ -920,37 +927,268 @@ class ModernTodoAppWindow(QMainWindow):
 
         if changed:
             save_todos(self.todos)
-            self.update_list_widget()
+            self.update_list_widget(changed_ids={normalized_id})
         else:
             print(f"警告: 切换ID {normalized_id} 任务完成状态时未找到。")
 
     # --- 列表刷新 ---
-    def update_list_widget(self) -> None:
-        self.list_widget.clear()
+    def update_list_widget(
+        self,
+        _selection: object = None,
+        *,
+        changed_ids: Optional[Iterable[int]] = None,
+    ) -> None:
+        """协调目标列表顺序，同时复用未变化的任务卡片。"""
+
+        del _selection
         if not isinstance(self.todos, list):
             self.todos = []
 
-        working_copy = [item.copy() for item in self.todos if isinstance(item, dict) and "id" in item]
+        working_copy = [
+            item.copy()
+            for item in self.todos
+            if isinstance(item, dict) and "id" in item
+        ]
         processed = self._sort_todos(self._filter_todos(working_copy))
+        if not self._todo_list_mapping_is_consistent():
+            self._rebuild_todo_list(processed)
+            return
+
+        normalized_changed_ids = (
+            None
+            if changed_ids is None
+            else {int(todo_id) for todo_id in changed_ids}
+        )
+        anchor = self._capture_scroll_anchor()
+        previous_viewport_width = self.list_widget.viewport().width()
+        target_ids = [int(todo["id"]) for todo in processed]
+        if len(target_ids) != len(set(target_ids)):
+            raise RuntimeError("筛选和排序结果中存在重复任务 ID")
+
+        target_id_set = set(target_ids)
+        structure_changed = False
+        layout_changed = False
+
+        self._reconciling_todo_list = True
+        try:
+            for todo_id in tuple(self._todo_items_by_id):
+                if todo_id not in target_id_set:
+                    self._remove_todo_list_entry(todo_id)
+                    structure_changed = True
+
+            if not processed:
+                self._show_empty_list_message()
+                structure_changed = True
+            else:
+                if self._remove_empty_placeholder():
+                    structure_changed = True
+
+                for target_row, todo_data in enumerate(processed):
+                    todo_id = int(todo_data["id"])
+                    list_item = self._todo_items_by_id.get(todo_id)
+                    item_widget = self._todo_widgets_by_id.get(todo_id)
+                    if list_item is None or item_widget is None:
+                        list_item, item_widget = self._create_todo_list_entry(
+                            todo_data,
+                            target_row,
+                        )
+                        structure_changed = True
+                        layout_changed = True
+                    else:
+                        should_update = (
+                            normalized_changed_ids is None
+                            or todo_id in normalized_changed_ids
+                        )
+                        if should_update and item_widget.update_todo(todo_data):
+                            layout_changed = (
+                                self._sync_todo_card_size(list_item, item_widget)
+                                or layout_changed
+                            )
+
+                    current_row = self.list_widget.row(list_item)
+                    if current_row != target_row:
+                        self._move_todo_list_entry(
+                            todo_id,
+                            target_row,
+                        )
+                        structure_changed = True
+        finally:
+            self._reconciling_todo_list = False
+
+        if structure_changed or layout_changed:
+            self.list_widget.doItemsLayout()
+        if self.list_widget.viewport().width() != previous_viewport_width:
+            self._sync_todo_card_sizes()
+        self._restore_scroll_anchor(anchor)
+
+    def _todo_list_mapping_is_consistent(self) -> bool:
+        """确认映射、列表项和卡片仍描述同一组可见任务。"""
+
+        if self._todo_items_by_id.keys() != self._todo_widgets_by_id.keys():
+            return False
+
+        placeholder_count = 0
+        if self._empty_placeholder_item is not None:
+            if self.list_widget.row(self._empty_placeholder_item) < 0:
+                return False
+            if (
+                self.list_widget.itemWidget(self._empty_placeholder_item)
+                is not self._empty_placeholder_widget
+            ):
+                return False
+            placeholder_count = 1
+        elif any(
+            placeholder is not None
+            for placeholder in (
+                self._empty_placeholder_widget,
+                self._empty_placeholder_label,
+            )
+        ):
+            return False
+
+        if self.list_widget.count() != len(self._todo_items_by_id) + placeholder_count:
+            return False
+
+        for todo_id, list_item in self._todo_items_by_id.items():
+            item_widget = self._todo_widgets_by_id[todo_id]
+            if self.list_widget.row(list_item) < 0:
+                return False
+            if self.list_widget.itemWidget(list_item) is not item_widget:
+                return False
+            if item_widget.todo_item.get("id") != todo_id:
+                return False
+        return True
+
+    def _create_todo_list_entry(
+        self,
+        todo_data: dict,
+        target_row: int,
+    ) -> tuple[QListWidgetItem, TodoItemWidget]:
+        """创建一张任务卡片并只连接一次操作信号。"""
+
+        todo_id = int(todo_data["id"])
+        list_item = QListWidgetItem()
+        item_widget = TodoItemWidget(todo_data.copy(), palette=self._palette)
+        item_widget.request_edit.connect(self.handle_edit_request)
+        item_widget.request_delete.connect(self.handle_delete_request)
+        item_widget.request_toggle_complete.connect(
+            self.handle_toggle_complete_request
+        )
+        widget_size_hint = item_widget.sizeHint()
+        item_height = max(widget_size_hint.height(), item_widget.minimumHeight())
+        list_item.setSizeHint(QSize(0, item_height))
+        self.list_widget.insertItem(target_row, list_item)
+        self.list_widget.setItemWidget(list_item, item_widget)
+        self._todo_items_by_id[todo_id] = list_item
+        self._todo_widgets_by_id[todo_id] = item_widget
+        self._sync_todo_card_size(list_item, item_widget)
+        return list_item, item_widget
+
+    def _remove_todo_list_entry(self, todo_id: int) -> None:
+        """移除一张卡片及其映射，并安排释放完整子对象树。"""
+
+        list_item = self._todo_items_by_id.pop(todo_id, None)
+        item_widget = self._todo_widgets_by_id.pop(todo_id, None)
+        if list_item is None:
+            return
+        row = self.list_widget.row(list_item)
+        if row >= 0:
+            self.list_widget.removeItemWidget(list_item)
+            removed_item = self.list_widget.takeItem(row)
+            del removed_item
+        if item_widget is not None:
+            item_widget.deleteLater()
+
+    def _move_todo_list_entry(self, todo_id: int, target_row: int) -> None:
+        """移动现有列表项，不重建其卡片或重复连接信号。"""
+
+        list_item = self._todo_items_by_id[todo_id]
+        item_widget = self._todo_widgets_by_id[todo_id]
+        current_row = self.list_widget.row(list_item)
+        if current_row < 0 or current_row == target_row:
+            return
+        self.list_widget.removeItemWidget(list_item)
+        moved_item = self.list_widget.takeItem(current_row)
+        self.list_widget.insertItem(target_row, moved_item)
+        self.list_widget.setItemWidget(moved_item, item_widget)
+
+    def _sync_todo_card_size(
+        self,
+        list_item: QListWidgetItem,
+        item_widget: TodoItemWidget,
+    ) -> bool:
+        """只同步新建或视觉发生变化的目标卡片高度。"""
+
+        viewport = self.list_widget.viewport()
+        if calculate_card_width(
+            viewport.width(),
+            self.list_widget.spacing(),
+        ) <= 0:
+            return False
+        layout_result = item_widget.refresh_layout(
+            viewport_width=viewport.width(),
+            list_spacing=self.list_widget.spacing(),
+        )
+        target_hint = QSize(0, layout_result.card_height)
+        if list_item.sizeHint() == target_hint:
+            return False
+        list_item.setSizeHint(target_hint)
+        return True
+
+    def _capture_scroll_anchor(self) -> tuple[Optional[int], int, int]:
+        """记录首个可见任务及其像素偏移，供差量更新后恢复。"""
+
+        scrollbar = self.list_widget.verticalScrollBar()
+        for row in range(self.list_widget.count()):
+            list_item = self.list_widget.item(row)
+            item_widget = self.list_widget.itemWidget(list_item)
+            if not isinstance(item_widget, TodoItemWidget):
+                continue
+            item_rect = self.list_widget.visualItemRect(list_item)
+            if item_rect.bottom() >= 0:
+                return (
+                    int(item_widget.todo_item["id"]),
+                    item_rect.top(),
+                    scrollbar.value(),
+                )
+        return None, 0, scrollbar.value()
+
+    def _restore_scroll_anchor(
+        self,
+        anchor: tuple[Optional[int], int, int],
+    ) -> None:
+        """在目标任务仍存在时保持其原像素位置，否则保留旧滚动值。"""
+
+        todo_id, previous_top, previous_value = anchor
+        scrollbar = self.list_widget.verticalScrollBar()
+        if todo_id is None or todo_id not in self._todo_items_by_id:
+            scrollbar.setValue(
+                min(max(previous_value, scrollbar.minimum()), scrollbar.maximum())
+            )
+            return
+
+        list_item = self._todo_items_by_id[todo_id]
+        current_top = self.list_widget.visualItemRect(list_item).top()
+        target_value = scrollbar.value() + current_top - previous_top
+        scrollbar.setValue(
+            min(max(target_value, scrollbar.minimum()), scrollbar.maximum())
+        )
+
+    def _rebuild_todo_list(self, processed: list[dict]) -> None:
+        """映射异常时执行一次完整恢复；正常 CRUD 不进入此路径。"""
+
+        self.list_widget.clear()
+        self._todo_items_by_id.clear()
+        self._todo_widgets_by_id.clear()
+        self._empty_placeholder_item = None
+        self._empty_placeholder_widget = None
+        self._empty_placeholder_label = None
         if not processed:
             self._show_empty_list_message()
             return
 
-        self._empty_placeholder_item = None
-        self._empty_placeholder_widget = None
-        self._empty_placeholder_label = None
-
-        for todo_data in processed:
-            list_item = QListWidgetItem(self.list_widget)
-            item_widget = TodoItemWidget(todo_data.copy(), palette=self._palette)
-            item_widget.request_edit.connect(self.handle_edit_request)
-            item_widget.request_delete.connect(self.handle_delete_request)
-            item_widget.request_toggle_complete.connect(self.handle_toggle_complete_request)
-            widget_size_hint = item_widget.sizeHint()
-            item_height = max(widget_size_hint.height(), item_widget.minimumHeight())
-            list_item.setSizeHint(QSize(0, item_height))
-            self.list_widget.addItem(list_item)
-            self.list_widget.setItemWidget(list_item, item_widget)
+        for target_row, todo_data in enumerate(processed):
+            self._create_todo_list_entry(todo_data, target_row)
 
         self._sync_todo_card_sizes()
 
@@ -992,8 +1230,11 @@ class ModernTodoAppWindow(QMainWindow):
             self._syncing_todo_card_sizes = False
 
     def _show_empty_list_message(self) -> None:
-        self.list_widget.clear()
-        empty_item = QListWidgetItem(self.list_widget)
+        if self._empty_placeholder_item is not None:
+            self._update_empty_placeholder_geometry()
+            return
+
+        empty_item = QListWidgetItem()
         empty_container = QWidget()
         container_layout = QVBoxLayout(empty_container)
         container_layout.setContentsMargins(0, 40, 0, 40)
@@ -1015,6 +1256,26 @@ class ModernTodoAppWindow(QMainWindow):
         self._apply_palette(self._palette)
         self._update_empty_placeholder_geometry()
         QTimer.singleShot(0, self._update_empty_placeholder_geometry)
+
+    def _remove_empty_placeholder(self) -> bool:
+        """移除空列表占位，不触碰已有任务卡片。"""
+
+        empty_item = self._empty_placeholder_item
+        empty_widget = self._empty_placeholder_widget
+        if empty_item is None:
+            return False
+
+        row = self.list_widget.row(empty_item)
+        if row >= 0:
+            self.list_widget.removeItemWidget(empty_item)
+            removed_item = self.list_widget.takeItem(row)
+            del removed_item
+        if empty_widget is not None:
+            empty_widget.deleteLater()
+        self._empty_placeholder_item = None
+        self._empty_placeholder_widget = None
+        self._empty_placeholder_label = None
+        return True
 
     def _filter_todos(self, todos_list: List[dict]) -> List[dict]:
         filter_text = self.filter_combo.currentText()
