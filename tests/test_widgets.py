@@ -948,6 +948,8 @@ class TodoListCardIntegrationTest(unittest.TestCase):
         with patch.object(window.list_widget, "clear") as clear_mock:
             todos[2].update({"text": "提升后的任务", "priority": "高"})
             window.update_list_widget(changed_ids={3})
+        self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self.app.processEvents()
 
         clear_mock.assert_not_called()
         self.assertIs(window._todo_widgets_by_id[3], original_widgets[3])
