@@ -16,6 +16,7 @@ from todo_app.constants import (
     TASK_DETAILS_MAXIMUM_WIDTH,
     TASK_DETAILS_MINIMUM_TEXT_WIDTH,
     TASK_TIMER_MINIMUM_WIDTH,
+    TASK_TEXT_MAXIMUM_LINES,
 )
 from todo_app.layout import (
     TaskCardLayoutInput,
@@ -96,6 +97,15 @@ class TaskCardLayoutTest(unittest.TestCase):
         self.assertEqual(layout.scroll_area_width, 334)
         self.assertEqual(layout.popup_width, TASK_DETAILS_MAXIMUM_WIDTH)
 
+    def test_hidden_lines_do_not_increase_card_height(self) -> None:
+        preview = calculate_task_card_layout(
+            self._card_values(viewport_width=320, logical_line_count=3)
+        )
+        long_text = calculate_task_card_layout(
+            self._card_values(viewport_width=320, logical_line_count=30)
+        )
+        self.assertEqual(long_text, preview)
+
     @staticmethod
     def _card_values(
         *,
@@ -120,6 +130,7 @@ class TaskCardLayoutTest(unittest.TestCase):
             task_text_horizontal_inset=0,
             task_text_vertical_inset=0,
             logical_line_count=logical_line_count,
+            maximum_line_count=TASK_TEXT_MAXIMUM_LINES,
             line_height=17,
             content_layout_vertical_inset=0,
             content_layout_spacing=TASK_CONTENT_VERTICAL_SPACING,

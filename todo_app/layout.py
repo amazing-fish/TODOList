@@ -28,6 +28,7 @@ class TaskCardLayoutInput:
     task_text_horizontal_inset: int
     task_text_vertical_inset: int
     logical_line_count: int
+    maximum_line_count: int
     line_height: int
     content_layout_vertical_inset: int
     content_layout_spacing: int
@@ -127,7 +128,9 @@ def calculate_task_card_layout(values: TaskCardLayoutInput) -> TaskCardLayout:
         0,
     )
 
-    logical_line_count = max(values.logical_line_count, 1)
+    logical_line_count = min(
+        max(values.logical_line_count, 1), max(values.maximum_line_count, 1)
+    )
     task_text_height = (
         logical_line_count * max(values.line_height, 0)
         + max(values.task_text_vertical_inset, 0)

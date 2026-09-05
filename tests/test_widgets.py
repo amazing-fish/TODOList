@@ -63,6 +63,11 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
 
         self.assertTrue(widget.edit_button.isVisible())
         self.assertTrue(widget.delete_button.isVisible())
+        self.assertLess(widget.actions_container.height(), widget.contentsRect().height())
+        self.assertLessEqual(
+            abs(widget.actions_container.geometry().center().y() - widget.contentsRect().center().y()),
+            1,
+        )
         self.assertEqual(widget.task_text_label.geometry(), idle_task_geometry)
         self.assertEqual(widget.timer_display_label.geometry(), idle_timer_geometry)
         self._assert_each_logical_line_fits(widget)
@@ -102,11 +107,10 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
         self.assertEqual(widget.task_text_label.text(), original_text)
         self.assertEqual(widget.todo_item["text"], original_text)
         displayed_lines = widget.task_text_label.displayed_lines()
-        self.assertEqual(len(displayed_lines), 4)
+        self.assertEqual(len(displayed_lines), 3)
         self.assertTrue(displayed_lines[0].endswith("…"))
         self.assertTrue(displayed_lines[1].endswith("…"))
-        self.assertEqual(displayed_lines[2], "")
-        self.assertTrue(displayed_lines[3].endswith("…"))
+        self.assertEqual(displayed_lines[2], "…")
         self.assertEqual(widget.task_text_label.toolTip(), "")
         self.assertTrue(widget.task_text_label.needs_details())
         self._assert_each_logical_line_fits(widget)
@@ -609,6 +613,58 @@ class TodoListCardIntegrationTest(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
         apply_application_font()
 
+    def test_long_task_preview_caps_item_height_and_edit_preserves_full_text(self) -> None:
+        original = "\r\n".join(f"第 {index} 行" for index in range(30))
+        todo = {
+            "id": 1, "text": original, "priority": "中", "completed": False,
+            "dueDate": None, "createdAt": "2026-09-05T00:00:00+00:00",
+        }
+        window = self._create_window(todos=[todo])
+        window.resize(320, 640)
+        window.show()
+        self.app.processEvents()
+        item = window.list_widget.item(0)
+        card = window.list_widget.itemWidget(item)
+        long_height = item.sizeHint().height()
+        self.assertEqual(card.height(), long_height)
+        self.assertEqual(card.task_text_label.displayed_lines(), ["第 0 行", "第 1 行", "第 2 行…"])
+        card.task_text_label.enterEvent(
+            QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1))
+        )
+        self.app.processEvents()
+        self.assertTrue(card.task_details_popup.isVisible())
+        self.assertEqual(card.task_details_popup.details_label.text(), original)
+        self.assertEqual(window.todos[0]["text"], original)
+
+        for replacement in ("第 0 行\n第 1 行\n第 2 行", "短任务", original):
+            window.todos[0]["text"] = replacement
+            window.update_list_widget(changed_ids={1})
+            self.app.processEvents()
+            self.assertIs(window.list_widget.itemWidget(item), card)
+            self.assertEqual(card.task_text_label.text(), replacement)
+            self.assertEqual(card.height(), item.sizeHint().height())
+            self.assertLessEqual(card.height(), long_height)
+            if replacement == "短任务":
+                self.assertLess(card.height(), long_height)
+                self.assertFalse(card.task_text_label.needs_details())
+
+    def test_list_reconciliation_cancels_pending_wheel_even_without_position_change(self) -> None:
+        window = self._create_window(todo_count=30)
+        window.show()
+        self.app.processEvents()
+        event = QWheelEvent(
+            QPointF(10, 10), QPointF(10, 10), QPoint(), QPoint(0, -120),
+            Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase, False,
+        )
+        self.app.sendEvent(window.list_widget.viewport(), event)
+        window.update_list_widget(changed_ids=set())
+        from PySide6.QtCore import QAbstractAnimation
+        self.assertEqual(
+            window.list_widget._scroll_animation.state(), QAbstractAnimation.State.Stopped
+        )
+        self.assertEqual(window.list_widget.verticalScrollBar().value(), 0)
+
     def test_main_controls_and_card_share_application_font_family(self) -> None:
         from todo_app.constants import APP_FONT_FAMILY
 
@@ -784,9 +840,11 @@ class TodoListCardIntegrationTest(unittest.TestCase):
         self.assertGreaterEqual(second_item.sizeHint().height(), second_card.minimumHeight())
 
         viewport_image = window.list_widget.viewport().grab().toImage()
-        sample_x = first_card.geometry().center().x()
-        card_y = first_card.geometry().top() + 5
-        gap_y = first_card.geometry().bottom() + 1 + card_gap // 2
+        # QWidget 几何是逻辑像素，原生 Windows 的截图可能使用缩放后的物理像素。
+        scale = viewport_image.devicePixelRatio()
+        sample_x = round(first_card.geometry().center().x() * scale)
+        card_y = round((first_card.geometry().top() + 5) * scale)
+        gap_y = round((first_card.geometry().bottom() + 1 + card_gap // 2) * scale)
         self.assertNotEqual(
             viewport_image.pixelColor(sample_x, card_y).rgba(),
             viewport_image.pixelColor(sample_x, gap_y).rgba(),
