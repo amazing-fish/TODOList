@@ -5,8 +5,9 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from todo_app import storage
 
@@ -63,6 +64,116 @@ class StorageTest(unittest.TestCase):
         storage.save_todos(todos)
 
         self.assertEqual(storage.load_todos(), todos)
+
+    def test_normalized_duplicate_ids_keep_all_tasks_and_only_change_conflicting_ids(self) -> None:
+        original = [
+            {**_todo(1, f"任务 {index}"), "id": raw_id}
+            for index, raw_id in enumerate((1, "1", 1.0, "1.0", 2, "2"))
+        ]
+        self._write_json(self.data_file, original)
+        original_bytes = self.data_file.read_bytes()
+
+        loaded = storage.load_todos()
+
+        self.assertEqual(len(loaded), len(original))
+        ids = [todo["id"] for todo in loaded]
+        self.assertEqual(len(set(ids)), len(ids))
+        self.assertTrue(all(isinstance(todo_id, int) for todo_id in ids))
+        self.assertEqual(ids[0], 1)
+        self.assertEqual(ids[4], 2)
+        for before, after in zip(original, loaded):
+            self.assertEqual(
+                {key: value for key, value in before.items() if key != "id"},
+                {key: value for key, value in after.items() if key != "id"},
+            )
+        self.assertEqual(self.data_file.read_bytes(), original_bytes)
+        self.assertFalse(self.backup_file.exists())
+
+    def test_repaired_ids_stay_unique_when_generation_collides_with_later_input(self) -> None:
+        now = datetime(2026, 9, 5, tzinfo=timezone.utc)
+        candidate = int(now.timestamp() * 1000)
+        original = [
+            _todo(1, "保留第一项"),
+            _todo(1, "需要新 ID"),
+            _todo(candidate + 1, "与刚生成的 ID 碰撞"),
+            {**_todo(0, "非法 ID"), "id": "invalid"},
+            {key: value for key, value in _todo(0, "缺失 ID").items() if key != "id"},
+        ]
+        self._write_json(self.data_file, original)
+        with patch("todo_app.storage.datetime") as clock:
+            clock.now.return_value = now
+            loaded = storage.load_todos()
+
+        ids = [todo["id"] for todo in loaded]
+        self.assertEqual(len(loaded), len(original))
+        self.assertEqual(len(set(ids)), len(ids))
+        self.assertEqual(ids[0], 1)
+        self.assertEqual([todo["text"] for todo in loaded], [todo["text"] for todo in original])
+
+    def test_repaired_ids_survive_save_reload_and_original_is_backed_up(self) -> None:
+        original = [_todo(1, "第一项"), {**_todo(1, "第二项"), "id": "1"}]
+        self._write_json(self.data_file, original)
+        original_bytes = self.data_file.read_bytes()
+        loaded = storage.load_todos()
+        self.assertEqual(len({todo["id"] for todo in loaded}), 2)
+
+        storage.save_todos(loaded)
+
+        self.assertEqual(storage.load_todos(), loaded)
+        self.assertEqual(self.backup_file.read_bytes(), original_bytes)
+        self.assertEqual(self._temp_files(), [])
+
+    def test_backup_duplicate_ids_are_repaired_without_overwriting_damaged_main(self) -> None:
+        damaged = b'{"unfinished":'
+        self.data_file.write_bytes(damaged)
+        self._write_json(self.backup_file, [_todo(1, "第一项"), _todo(1, "第二项")])
+        backup_bytes = self.backup_file.read_bytes()
+
+        with self.assertLogs("todo_app.storage", level="WARNING"):
+            loaded = storage.load_todos()
+
+        self.assertEqual(len(loaded), 2)
+        self.assertEqual(len({todo["id"] for todo in loaded}), 2)
+        with self.assertLogs("todo_app.storage", level="ERROR"):
+            storage.save_todos(loaded)
+        self.assertEqual(self.data_file.read_bytes(), damaged)
+        self.assertEqual(self.backup_file.read_bytes(), backup_bytes)
+
+    def test_window_loads_duplicate_ids_and_completes_only_the_requested_task(self) -> None:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtCore import QEvent
+        from PySide6.QtWidgets import QApplication
+        from todo_app.fonts import apply_application_font
+        from todo_app.main_window import ModernTodoAppWindow
+
+        self._write_json(
+            self.data_file, [_todo(1, "第一项"), {**_todo(1, "第二项"), "id": "1"}]
+        )
+        app = QApplication.instance() or QApplication([])
+        apply_application_font()
+        with patch("todo_app.main_window.QSettings", return_value=MagicMock()):
+            window = ModernTodoAppWindow()
+        window.master_timer.stop()
+        try:
+            self.assertEqual(window.list_widget.count(), 2)
+            ids = [todo["id"] for todo in window.todos]
+            self.assertEqual(set(window._todo_items_by_id), set(ids))
+            first_card = window._todo_widgets_by_id[ids[0]]
+
+            window.toggle_complete_todo(ids[1])
+
+            self.assertFalse(window.todos[0]["completed"])
+            self.assertTrue(window.todos[1]["completed"])
+            self.assertIs(window._todo_widgets_by_id[ids[0]], first_card)
+            self.assertEqual(storage.load_todos(), window.todos)
+        finally:
+            window._quitting_app = True
+            window.tray_icon.hide()
+            window.close()
+            app.processEvents()
+            window.deleteLater()
+            app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+            app.processEvents()
 
     def test_existing_valid_main_file_is_preserved_as_backup(self) -> None:
         original = [_todo(1, "旧任务")]
