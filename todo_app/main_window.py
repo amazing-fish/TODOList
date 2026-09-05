@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, Iterator, List, Optional
 from textwrap import dedent
 
 from PySide6.QtCore import (
@@ -188,7 +189,7 @@ class ModernTodoAppWindow(QMainWindow):
         self.reminder_sound.setVolume(0.7)
         self.due_sound.setVolume(0.8)
 
-        self._add_task_dialog: Optional[TaskEditDialog] = None
+        self._task_edit_dialog: Optional[TaskEditDialog] = None
         self._empty_placeholder_item: Optional[QListWidgetItem] = None
         self._empty_placeholder_widget: Optional[QWidget] = None
         self._empty_placeholder_label: Optional[QLabel] = None
@@ -601,7 +602,8 @@ class ModernTodoAppWindow(QMainWindow):
         else:
             play_sound_effect(self.reminder_sound, REMINDER_SOUND_PATH)
 
-        self._ensure_window_visible_for_notification()
+        if self._task_edit_dialog is None:
+            self._ensure_window_visible_for_notification()
         dialog = self._notification_dialog
         if dialog is None:
             dialog = NotificationDialog(requests, self)
@@ -610,11 +612,9 @@ class ModernTodoAppWindow(QMainWindow):
             dialog.snooze_requested.connect(self._handle_notification_snooze)
             dialog.ignore_requested.connect(self._handle_notification_ignore)
             dialog.finished.connect(self._on_notification_dialog_finished)
-            dialog.show()
         else:
             dialog.add_or_update_tasks(requests)
-        dialog.raise_()
-        dialog.activateWindow()
+        self._restore_notification_dialog()
 
     def _on_notification_dialog_finished(self, _result: int) -> None:
         if self._notification_dialog is self.sender():
@@ -688,9 +688,14 @@ class ModernTodoAppWindow(QMainWindow):
             self._remove_notification_tasks([normalized_id])
 
     def _restore_notification_dialog(self) -> None:
-        if self._notification_dialog is None:
+        if (
+            self._notification_dialog is None
+            or self._task_edit_dialog is not None
+            or self._quitting_app
+        ):
             return
-        self._notification_dialog.show()
+        if not self._notification_dialog.isVisible():
+            self._notification_dialog.show()
         self._notification_dialog.raise_()
         self._notification_dialog.activateWindow()
 
@@ -777,17 +782,38 @@ class ModernTodoAppWindow(QMainWindow):
         self.show()
 
     # --- 任务操作 ---
-    def show_add_task_dialog(self) -> None:
-        if self._add_task_dialog and self._add_task_dialog.isVisible():
-            if self._add_task_dialog.isMinimized():
-                self._add_task_dialog.showNormal()
-            self._add_task_dialog.raise_()
-            self._add_task_dialog.activateWindow()
-            return
+    def _activate_task_editor(self) -> bool:
+        dialog = self._task_edit_dialog
+        if dialog is None:
+            return False
+        if dialog.isMinimized():
+            dialog.showNormal()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return True
 
-        dialog = TaskEditDialog(parent=self)
-        self._add_task_dialog = dialog
+    @contextmanager
+    def _task_editor_session(self, todo_item: Optional[dict] = None) -> Iterator[TaskEditDialog]:
+        # 编辑持有模态输入期间，提醒仅累积数据；保存/取消后再恢复同一批次。
+        self._on_top_restore_timer.stop()
+        self._restore_window_stays_on_top_flag()
+        dialog = TaskEditDialog(todo_item=todo_item, parent=self)
+        self._task_edit_dialog = dialog
+        self._hide_notification_dialog()
         try:
+            yield dialog
+        finally:
+            self._task_edit_dialog = None
+            dialog.hide()
+            dialog.deleteLater()
+            if self.isVisible() and not self.isMinimized():
+                self._restore_notification_dialog()
+
+    def show_add_task_dialog(self) -> None:
+        if self._activate_task_editor():
+            return
+        with self._task_editor_session() as dialog:
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 new_data = dialog.get_task_data()
 
@@ -815,9 +841,6 @@ class ModernTodoAppWindow(QMainWindow):
                 self.todos.append(new_todo)
                 save_todos(self.todos)
                 self.update_list_widget()
-        finally:
-            if self._add_task_dialog is dialog:
-                self._add_task_dialog = None
 
     def _normalize_todo_id(self, raw_id: object) -> Optional[int]:
         """尝试将传入的任务 ID 规范化为 Python int。"""
@@ -829,6 +852,8 @@ class ModernTodoAppWindow(QMainWindow):
 
     @Slot(object)
     def handle_edit_request(self, todo_id: object) -> None:
+        if self._activate_task_editor():
+            return
         normalized_id = self._normalize_todo_id(todo_id)
         if normalized_id is None:
             QMessageBox.warning(self, "错误", "收到无效的任务标识，无法编辑。")
@@ -839,17 +864,17 @@ class ModernTodoAppWindow(QMainWindow):
             QMessageBox.warning(self, "错误", "无法找到要编辑的任务。")
             return
 
-        dialog = TaskEditDialog(todo_item=todo_to_edit, parent=self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            updated_data = dialog.get_task_data()
-            for index, todo in enumerate(self.todos):
-                if todo["id"] == normalized_id:
-                    self.todos[index].update(build_edit_update_fields(todo, updated_data))
-                    self._remove_notification_task(normalized_id)
-                    break
+        with self._task_editor_session(todo_to_edit) as dialog:
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                updated_data = dialog.get_task_data()
+                for index, todo in enumerate(self.todos):
+                    if todo["id"] == normalized_id:
+                        self.todos[index].update(build_edit_update_fields(todo, updated_data))
+                        self._remove_notification_task(normalized_id)
+                        break
 
-            save_todos(self.todos)
-            self.update_list_widget()
+                save_todos(self.todos)
+                self.update_list_widget()
 
     @Slot(object)
     def handle_delete_request(self, todo_id: object) -> None:
