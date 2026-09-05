@@ -52,6 +52,7 @@ from .constants import (
     TASK_DETAILS_MINIMUM_VERTICAL_SPACE,
     TASK_DETAILS_VERTICAL_MARGIN,
     TASK_TIMER_MINIMUM_WIDTH,
+    TASK_TEXT_MAXIMUM_LINES,
 )
 from .layout import (
     LayoutRect,
@@ -239,7 +240,7 @@ class _ElidedLabel(QLabel):
 
 
 class _PerLineElidedTaskLabel(QLabel):
-    """保留用户换行，并让每个逻辑行独立执行末尾省略。"""
+    """保留正文原文，按行数上限预览并独立省略过宽的行。"""
 
     details_requested = Signal()
     details_dismissed = Signal()
@@ -257,6 +258,13 @@ class _PerLineElidedTaskLabel(QLabel):
     def logical_lines(self) -> list[str]:
         return _TASK_LINE_BREAKS.split(self.text())
 
+    def preview_lines(self) -> list[str]:
+        lines = self.logical_lines()
+        preview = lines[:TASK_TEXT_MAXIMUM_LINES]
+        if len(lines) > len(preview):
+            preview[-1] += "…"
+        return preview
+
     def _available_width(self) -> int:
         if self._layout_available_width is not None:
             return self._layout_available_width
@@ -269,7 +277,7 @@ class _PerLineElidedTaskLabel(QLabel):
         self.refresh_elision()
 
     def displayed_lines(self) -> list[str]:
-        logical_lines = self.logical_lines()
+        logical_lines = self.preview_lines()
         available_width = self._available_width()
         if available_width <= 0:
             return logical_lines
@@ -297,7 +305,7 @@ class _PerLineElidedTaskLabel(QLabel):
     def natural_width(self) -> int:
         metrics = self.fontMetrics()
         widest_line = max(
-            (metrics.horizontalAdvance(line) for line in self.logical_lines()),
+            (metrics.horizontalAdvance(line) for line in self.preview_lines()),
             default=0,
         )
         margins = self.contentsMargins()
@@ -311,10 +319,7 @@ class _PerLineElidedTaskLabel(QLabel):
     def refresh_elision(self) -> None:
         previously_required = self.needs_details()
         displayed_lines = self.displayed_lines()
-        self._is_elided = any(
-            displayed != original
-            for displayed, original in zip(displayed_lines, self.logical_lines())
-        )
+        self._is_elided = displayed_lines != self.logical_lines()
         # 详情由卡片的主题化浮层负责，避免 Qt 原生 tooltip 重复出现。
         self.setToolTip("")
         currently_required = self.needs_details()
@@ -326,7 +331,7 @@ class _PerLineElidedTaskLabel(QLabel):
         del width
         margins = self.contentsMargins()
         return (
-            len(self.logical_lines()) * self.fontMetrics().lineSpacing()
+            len(self.preview_lines()) * self.fontMetrics().lineSpacing()
             + margins.top()
             + margins.bottom()
             + (self.margin() * 2)
@@ -1009,6 +1014,7 @@ class TodoItemWidget(QFrame):
             + task_margins.bottom()
             + (self.task_text_label.margin() * 2),
             logical_line_count=len(self.task_text_label.logical_lines()),
+            maximum_line_count=TASK_TEXT_MAXIMUM_LINES,
             line_height=self.task_text_label.fontMetrics().lineSpacing(),
             content_layout_vertical_inset=(
                 content_margins.top() + content_margins.bottom()
@@ -1042,11 +1048,14 @@ class TodoItemWidget(QFrame):
         if layout_result is None:
             layout_result = self._refresh_task_card_layout()
         content_rect = self.contentsRect()
+        action_height = min(
+            self.actions_container.sizeHint().height(), content_rect.height()
+        )
         self.actions_container.setGeometry(
             content_rect.left() + layout_result.action_area_x,
-            content_rect.top(),
+            content_rect.top() + (content_rect.height() - action_height) // 2,
             layout_result.action_area_width,
-            content_rect.height(),
+            action_height,
         )
         self.actions_container.raise_()
 

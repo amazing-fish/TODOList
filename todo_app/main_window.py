@@ -55,6 +55,7 @@ from .constants import (
 from .dialogs import NotificationDialog, TaskEditDialog
 from .layout import calculate_card_width
 from .scheduling import build_edit_update_fields, build_snooze_update_fields
+from .scrolling import SmoothScrollListWidget
 from .storage import load_todos, save_todos
 from .utils import get_icon, play_sound_effect
 from .widgets import TodoItemWidget
@@ -265,7 +266,7 @@ class ModernTodoAppWindow(QMainWindow):
         list_header_layout.addWidget(self.add_button)
         main_layout.addLayout(list_header_layout)
 
-        self.list_widget = QListWidget()
+        self.list_widget = SmoothScrollListWidget()
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         # QListView::spacing 会填充每个 item 四周，相邻卡片间距因此是该值的两倍。
         self.list_widget.setSpacing(TASK_CARD_LIST_GAP // 2)
@@ -966,6 +967,7 @@ class ModernTodoAppWindow(QMainWindow):
         """协调目标列表顺序，同时复用未变化的任务卡片。"""
 
         del _selection
+        self.list_widget.stop_scrolling()
         if not isinstance(self.todos, list):
             self.todos = []
 
