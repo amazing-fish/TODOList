@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, time, timezone
 from typing import Optional
 
 from PySide6.QtCore import QDateTime, QTime, QTimer, Qt, Signal, Slot
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QDateEdit,
     QDialog,
@@ -47,6 +48,7 @@ class NotificationDialog(QDialog):
     def __init__(self, requests: list[tuple[dict, bool]], parent=None):
         super().__init__(parent)
         self._task_rows: dict[int, dict[str, object]] = {}
+        self._positioned = False
         self._theme_manager = get_theme_manager()
         self._palette: ThemeColors = self._theme_manager.current_palette
         self._theme_manager.theme_changed.connect(self._on_theme_changed)
@@ -81,6 +83,8 @@ class NotificationDialog(QDialog):
         self.tasks_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self.tasks_scroll.setMaximumHeight(320)
         self.tasks_scroll.setWidget(self.tasks_container)
+        # QScrollArea 默认开启子控件背景填充，会在深色主题的卡片间露出系统浅色背景。
+        self.tasks_container.setAutoFillBackground(False)
         layout.addWidget(self.tasks_scroll)
 
     def add_or_update_tasks(self, requests: list[tuple[dict, bool]]) -> None:
@@ -178,7 +182,7 @@ class NotificationDialog(QDialog):
 
         self._update_title()
         self._apply_palette(self._palette)
-        self._adjust_size_and_position()
+        self._adjust_size()
 
     def _update_task_row(self, todo_id: int) -> None:
         row = self._task_rows[todo_id]
@@ -248,17 +252,49 @@ class NotificationDialog(QDialog):
     def _update_title(self) -> None:
         self.title_label.setText(f"{len(self._task_rows)} 个任务需要处理")
 
-    def _adjust_size_and_position(self) -> None:
+    def _adjust_size(self) -> None:
         visible_rows_height = min(320, max(80, len(self._task_rows) * 72))
         self.tasks_scroll.setFixedHeight(visible_rows_height)
         self.adjustSize()
-        parent = self.parentWidget()
-        screen = parent.screen() if parent and hasattr(parent, "screen") else None
-        if screen:
-            screen_geo = screen.availableGeometry()
-            x = screen_geo.right() - self.width() - 20
-            y = screen_geo.bottom() - self.height() - 20
-            self.move(max(screen_geo.left(), x), max(screen_geo.top(), y))
+        if self._positioned:
+            self._ensure_on_screen()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        handle = self.windowHandle()
+        if not self._positioned:
+            if handle is not None:
+                handle.screenChanged.connect(self._ensure_on_screen)
+            app = QGuiApplication.instance()
+            app.screenAdded.connect(self._watch_screen_geometry)
+            app.screenRemoved.connect(self._ensure_on_screen)
+            for screen in app.screens():
+                self._watch_screen_geometry(screen)
+            screen = self.screen()
+            if screen is not None:
+                area = screen.availableGeometry()
+                frame = self.frameGeometry()
+                self.move(
+                    max(area.left(), area.right() + 1 - frame.width() - 20),
+                    max(area.top(), area.bottom() + 1 - frame.height() - 20),
+                )
+            self._positioned = True
+        self._ensure_on_screen()
+
+    def _watch_screen_geometry(self, screen) -> None:
+        screen.availableGeometryChanged.connect(self._ensure_on_screen)
+
+    def _ensure_on_screen(self) -> None:
+        # 使用提醒自身所在屏幕，避免拖到副屏后被主窗口的屏幕位置拉回。
+        frame = self.frameGeometry()
+        screen = QGuiApplication.screenAt(frame.center()) or self.screen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        x = max(area.left(), min(frame.left(), area.right() + 1 - frame.width()))
+        y = max(area.top(), min(frame.top(), area.bottom() + 1 - frame.height()))
+        if x != frame.left() or y != frame.top():
+            self.move(self.pos().x() + x - frame.left(), self.pos().y() + y - frame.top())
 
     def task_ids(self) -> list[int]:
         return list(self._task_rows)
@@ -271,7 +307,7 @@ class NotificationDialog(QDialog):
             self.tasks_layout.removeWidget(row["widget"])
             row["widget"].deleteLater()
         self._update_title()
-        self._adjust_size_and_position()
+        self._adjust_size()
         if not self._task_rows:
             self.close()
 
