@@ -1050,6 +1050,47 @@ class TodoItemWidget(QFrame):
         )
         self.actions_container.raise_()
 
+    def update_todo(
+        self,
+        todo_item: dict,
+        *,
+        current_time_utc: Optional[datetime] = None,
+    ) -> bool:
+        """原位应用同一任务的新数据，并返回视觉呈现是否变化。"""
+
+        next_todo = todo_item.copy()
+        previous_id = self.todo_item.get("id")
+        next_id = next_todo.get("id")
+        if previous_id != next_id:
+            raise ValueError(
+                f"任务卡片不能从 ID {previous_id!r} 改绑到 {next_id!r}"
+            )
+
+        next_text = next_todo.get("text", "无内容")
+        next_priority = next_todo.get("priority", "中")
+        text_changed = self.original_text != next_text
+        priority_changed = self.todo_item.get("priority", "中") != next_priority
+
+        self.todo_item.clear()
+        self.todo_item.update(next_todo)
+
+        if text_changed:
+            self.original_text = next_text
+            self._hide_task_details()
+        if priority_changed:
+            self.priority_label.setText(
+                self._priority_badge_html(next_priority)
+            )
+            self.priority_label.setTextFormat(Qt.TextFormat.RichText)
+
+        presentation_changed = self.update_timer_display(
+            current_time_utc or datetime.now(timezone.utc)
+        )
+        content_changed = text_changed or priority_changed
+        if content_changed and not presentation_changed:
+            self.update_text_display()
+        return content_changed or presentation_changed
+
     def update_text_display(self) -> None:
         if self.task_text_label.text() != self.original_text:
             self.task_text_label.setText(self.original_text)

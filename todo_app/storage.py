@@ -87,12 +87,16 @@ def _migrate_and_validate_todo_item(todo_dict: dict[str, Any], current_index: in
     elif isinstance(item.get("id"), float):
         item["id"] = int(item["id"])
 
+    processed_ids = [it["id"] for it in processed if isinstance(it.get("id"), int)]
+    existing_ids = set(processed_ids)
+    if not is_new_id_needed and item["id"] in existing_ids:
+        logger.warning("任务 ID %r 规范化后重复，将为后续任务重新生成 ID", original_id_for_warning)
+        is_new_id_needed = True
+
     if is_new_id_needed:
-        processed_ids = [it["id"] for it in processed if isinstance(it.get("id"), int)]
         current_max_id = max(processed_ids) if processed_ids else 0
         candidate_id = int(datetime.now(timezone.utc).timestamp() * 1000) + current_index
         new_id = max(candidate_id, current_max_id + 1 if processed_ids else candidate_id)
-        existing_ids = set(processed_ids)
         while new_id in existing_ids:
             new_id += 1
         item["id"] = new_id

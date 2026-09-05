@@ -167,6 +167,37 @@ class NotificationWindowUxTest(unittest.TestCase):
         self.assertEqual(dialog.task_ids(), [2])
         self.assertEqual(self.window.todos[0]["text"], "保存后的任务")
 
+    def test_add_and_edit_sessions_reuse_untouched_cards_without_clearing_list(self) -> None:
+        dialog = self._notify(1, 2)
+        self.window.update_list_widget()
+        untouched = self.window._todo_widgets_by_id[2]
+        with (
+            patch.object(self.window.list_widget, "clear", wraps=self.window.list_widget.clear) as clear,
+            patch.object(untouched, "update_todo", wraps=untouched.update_todo) as update_untouched,
+        ):
+            self._run_editor(lambda editor: self.assertFalse(dialog.isVisible()), accept=True)
+            self._run_editor(
+                lambda editor: self.assertFalse(dialog.isVisible()), todo_id=1, accept=True
+            )
+
+        clear.assert_not_called()
+        update_untouched.assert_not_called()
+        self.assertIs(self.window._todo_widgets_by_id[2], untouched)
+        self.assertEqual(self.window.list_widget.count(), 3)
+        self.assertEqual(dialog.task_ids(), [2])
+
+    def test_cancel_edit_does_not_save_or_change_existing_tasks(self) -> None:
+        dialog = self._notify(1)
+        before = [todo.copy() for todo in self.window.todos]
+        with patch("todo_app.main_window.save_todos") as save:
+            self._run_editor(
+                lambda editor: editor.task_input.setPlainText("取消的修改"), todo_id=1
+            )
+
+        save.assert_not_called()
+        self.assertEqual(self.window.todos, before)
+        self.assertTrue(dialog.isVisible())
+
     def test_new_due_batch_during_editor_is_recorded_without_stealing_focus(self) -> None:
         def inspect(editor):
             self.window.todos = [make_todo(1), make_todo(2)]
