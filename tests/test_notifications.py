@@ -261,6 +261,9 @@ class FakeNotificationDialog:
         self.hide_count += 1
         self.visible = False
 
+    def isVisible(self) -> bool:
+        return self.visible
+
     def exec(self) -> QDialog.DialogCode:
         self.exec_count += 1
         return QDialog.DialogCode.Rejected
