@@ -274,6 +274,7 @@ class ModernTodoAppWindow(QMainWindow):
         scrollbar = self.list_widget.verticalScrollBar()
         scrollbar.setFixedWidth(_LIST_SCROLLBAR_WIDTH)
         scrollbar.rangeChanged.connect(self._sync_list_scrollbar_gutter)
+        scrollbar.valueChanged.connect(lambda _value: self._refresh_visible_todo_timers())
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.list_widget.viewport().installEventFilter(self)
         self._sync_list_scrollbar_gutter()
@@ -536,27 +537,39 @@ class ModernTodoAppWindow(QMainWindow):
                 notification_requests.append(notification_request)
                 changed_ids.add(original_ref["id"])
 
-        todos_by_id = {todo.get("id"): todo for todo in self.todos}
+        if changed_ids:
+            save_todos(self.todos)
+            self.update_list_widget(changed_ids=changed_ids)
+        self._refresh_visible_todo_timers(current_time_utc=now_utc)
+        if notification_requests:
+            self._show_notification_batch(notification_requests)
+
+    def _refresh_visible_todo_timers(
+        self, *, current_time_utc: Optional[datetime] = None,
+    ) -> None:
+        """仅刷新与视口相交的卡片；数据变更仍由列表协调统一处理。"""
+
+        if (
+            self._quitting_app
+            or self._reconciling_todo_list
+            or self._syncing_todo_card_sizes
+            or not self.list_widget.isVisible()
+            or self.isMinimized()
+        ):
+            return
+        now_utc = current_time_utc or datetime.now(timezone.utc)
+        viewport_rect = self.list_widget.viewport().rect()
         for index in range(self.list_widget.count()):
             list_item = self.list_widget.item(index)
-            if not list_item:
+            item_rect = self.list_widget.visualItemRect(list_item)
+            if item_rect.top() > viewport_rect.bottom():
+                break
+            if not item_rect.intersects(viewport_rect):
                 continue
             item_widget = self.list_widget.itemWidget(list_item)
             if not isinstance(item_widget, TodoItemWidget):
                 continue
-            original_ref = todos_by_id.get(item_widget.todo_item.get("id"))
-            if original_ref is None:
-                continue
-            item_widget.update_todo(
-                original_ref,
-                current_time_utc=now_utc,
-            )
-
-        if changed_ids:
-            save_todos(self.todos)
-            self.update_list_widget(changed_ids=changed_ids)
-        if notification_requests:
-            self._show_notification_batch(notification_requests)
+            item_widget.update_timer_display(now_utc)
 
     # --- 通知逻辑 ---
     def _check_for_notification(
@@ -1047,6 +1060,7 @@ class ModernTodoAppWindow(QMainWindow):
         if self.list_widget.viewport().width() != previous_viewport_width:
             self._sync_todo_card_sizes()
         self._restore_scroll_anchor(anchor)
+        self._refresh_visible_todo_timers()
 
     def _todo_list_mapping_is_consistent(self) -> bool:
         """确认映射、列表项和卡片仍描述同一组可见任务。"""
@@ -1255,6 +1269,7 @@ class ModernTodoAppWindow(QMainWindow):
                 self.list_widget.doItemsLayout()
         finally:
             self._syncing_todo_card_sizes = False
+        self._refresh_visible_todo_timers()
 
     def _show_empty_list_message(self) -> None:
         if self._empty_placeholder_item is not None:
@@ -1412,6 +1427,8 @@ class ModernTodoAppWindow(QMainWindow):
             and not (old_state & Qt.WindowState.WindowMinimized)
         ):
             QTimer.singleShot(0, self._minimize_to_tray)
+        elif old_state & Qt.WindowState.WindowMinimized and not self.isMinimized():
+            self._refresh_visible_todo_timers()
 
     def _minimize_to_tray(self) -> None:
         if self._quitting_app:
