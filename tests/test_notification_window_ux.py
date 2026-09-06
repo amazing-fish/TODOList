@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QTimer, Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
+from PySide6.QtCore import QEvent, QPoint, QRect, QTimer, Qt, SIGNAL  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog, QWidget  # noqa: E402
 
 from todo_app.dialogs import NotificationDialog, TaskEditDialog  # noqa: E402
 from todo_app.main_window import ModernTodoAppWindow  # noqa: E402
@@ -101,6 +101,27 @@ class NotificationWindowUxTest(unittest.TestCase):
         self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         self.app.processEvents()
         self.assertEqual(self.window.findChildren(TaskEditDialog), [])
+
+    def test_one_hundred_editor_cycles_release_widgets_and_theme_connections(self) -> None:
+        todo = make_todo(1)
+        todo["dueDate"] = None
+        self.window.todos = [todo]
+        self.window.update_list_widget()
+        self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self.app.processEvents()
+        theme = get_theme_manager()
+        signal = SIGNAL("theme_changed(PyObject)")
+        initial_receivers = theme.receivers(signal)
+        initial_widgets = len(self.window.findChildren(QWidget))
+
+        def inspect(editor):
+            self.assertEqual(theme.receivers(signal), initial_receivers + 1)
+
+        for index in range(100):
+            with self.subTest(cycle=index):
+                self._run_editor(inspect, todo_id=1 if index % 2 else None)
+                self.assertEqual(len(self.window.findChildren(QWidget)), initial_widgets)
+                self.assertEqual(theme.receivers(signal), initial_receivers)
 
     def test_notification_keeps_moved_position_after_refresh_resize_and_restore(self) -> None:
         dialog = self._notify(1)
