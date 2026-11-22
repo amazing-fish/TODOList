@@ -27,35 +27,32 @@ from todo_app.layout import (
 
 
 class TaskCardLayoutTest(unittest.TestCase):
-    def test_wide_viewport_keeps_task_and_timer_at_natural_width(self) -> None:
+    def test_wide_viewport_grants_full_content_row_width_to_task_and_meta_row(self) -> None:
         values = self._card_values(viewport_width=500)
 
         layout = calculate_task_card_layout(values)
 
         self.assertGreaterEqual(layout.task_area_width, values.task_natural_width)
-        self.assertEqual(layout.timer_area_width, values.timer_natural_width)
+        self.assertGreaterEqual(layout.timer_area_width, values.timer_natural_width)
+        self.assertEqual(layout.task_area_width, 500 - 8 - 26 - 32 - 10)
         self.assertFalse(layout.overconstrained)
 
-    def test_narrow_viewport_shrinks_task_extra_before_timer(self) -> None:
+    def test_narrow_viewport_keeps_full_task_width_without_timer_collision(self) -> None:
         values = self._card_values(viewport_width=306)
 
         layout = calculate_task_card_layout(values)
 
+        self.assertEqual(layout.task_area_width, 306 - 8 - 26 - 32 - 10)
+        self.assertGreaterEqual(layout.task_area_width, layout.task_area_minimum_width)
         self.assertEqual(
-            layout.task_area_width,
-            layout.task_area_minimum_width,
-        )
-        self.assertEqual(layout.timer_area_width, 70)
-        self.assertGreater(
             layout.timer_area_width,
-            layout.timer_area_minimum_width,
+            layout.task_area_width - (values.priority_natural_width + values.meta_row_spacing),
         )
-        self.assertLess(layout.timer_area_width, values.timer_natural_width)
         self.assertFalse(layout.overconstrained)
 
     def test_extremely_narrow_viewport_preserves_area_minimums(self) -> None:
         layout = calculate_task_card_layout(
-            self._card_values(viewport_width=250)
+            self._card_values(viewport_width=150)
         )
 
         self.assertEqual(
@@ -77,8 +74,19 @@ class TaskCardLayoutTest(unittest.TestCase):
         )
 
         self.assertEqual(layout.task_text_height, 51)
-        self.assertEqual(layout.content_height, 75)
-        self.assertEqual(layout.card_height, 101)
+        self.assertEqual(layout.content_height, 51 + TASK_CONTENT_VERTICAL_SPACING + 20)
+        self.assertEqual(layout.card_height, max(TASK_CARD_MINIMUM_HEIGHT, 26 + layout.content_height))
+
+    def test_recurrence_badge_reserves_meta_row_width_cleanly(self) -> None:
+        without_badge = calculate_task_card_layout(
+            self._card_values(viewport_width=320, recurrence_badge_width=0)
+        )
+        with_badge = calculate_task_card_layout(
+            self._card_values(viewport_width=320, recurrence_badge_width=64)
+        )
+
+        self.assertEqual(with_badge.task_area_width, without_badge.task_area_width)
+        self.assertEqual(without_badge.timer_area_width - with_badge.timer_area_width, 64 + 8)
 
     def test_details_popup_width_is_capped(self) -> None:
         layout = calculate_task_details_width(
@@ -111,6 +119,7 @@ class TaskCardLayoutTest(unittest.TestCase):
         *,
         viewport_width: int,
         logical_line_count: int = 1,
+        recurrence_badge_width: int = 0,
     ) -> TaskCardLayoutInput:
         return TaskCardLayoutInput(
             viewport_width=viewport_width,
@@ -142,6 +151,8 @@ class TaskCardLayoutTest(unittest.TestCase):
             timer_height=20,
             action_area_width=TASK_ACTION_AREA_WIDTH,
             card_minimum_height=TASK_CARD_MINIMUM_HEIGHT,
+            meta_row_spacing=8,
+            recurrence_badge_width=recurrence_badge_width,
         )
 
 

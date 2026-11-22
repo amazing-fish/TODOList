@@ -40,6 +40,8 @@ class TaskCardLayoutInput:
     timer_height: int
     action_area_width: int
     card_minimum_height: int
+    meta_row_spacing: int = 8
+    recurrence_badge_width: int = 0
 
 
 @dataclass(frozen=True)
@@ -70,10 +72,10 @@ def calculate_card_width(viewport_width: int, list_spacing: int) -> int:
 
 
 def calculate_task_card_layout(values: TaskCardLayoutInput) -> TaskCardLayout:
-    """按现有挤压优先级计算卡片区域尺寸。
+    """按二维卡片规则计算正文行与元信息行尺寸。
 
-    正文先让出超过其动态最小宽度的空间，计时区随后从自然宽度压缩到最小
-    宽度。viewport 再窄时仍保留两个区域的既有最小宽度。
+    第 1 行为全宽正文预览，不与计时区域争抢横向空间；第 2 行为元信息行，
+    依次放置优先级标识、可选循环徽章和右对齐计时文字。
     """
 
     card_width = calculate_card_width(values.viewport_width, values.list_spacing)
@@ -81,43 +83,41 @@ def calculate_task_card_layout(values: TaskCardLayoutInput) -> TaskCardLayout:
         card_width - max(values.card_frame_horizontal_inset, 0),
         0,
     )
+    main_spacing = max(values.main_layout_spacing, 0)
+    region_budget = max(
+        card_content_width - max(values.complete_area_width, 0) - main_spacing,
+        0,
+    )
+
     task_area_minimum_width = max(
         values.task_area_floor_width,
         min(
             values.task_area_maximum_minimum_width,
-            max(values.task_natural_width, values.priority_natural_width),
+            values.task_natural_width,
         ),
     )
+    task_area_width = max(region_budget, task_area_minimum_width)
+
+    meta_spacing = max(values.meta_row_spacing, 0)
+    fixed_meta_width = max(values.priority_natural_width, 0) + meta_spacing
+    if values.recurrence_badge_width > 0:
+        fixed_meta_width += values.recurrence_badge_width + meta_spacing
+
     timer_area_minimum_width = max(
         values.timer_base_minimum_width,
         values.timer_prefix_minimum_width,
         0,
     )
-    timer_preferred_width = max(values.timer_natural_width, timer_area_minimum_width)
-    spacing_width = max(values.main_layout_spacing, 0) * 2
-    region_budget = max(
-        card_content_width
-        - max(values.complete_area_width, 0)
-        - spacing_width,
-        0,
-    )
-    minimum_region_width = task_area_minimum_width + timer_area_minimum_width
+    timer_area_width = max(region_budget - fixed_meta_width, timer_area_minimum_width)
+
+    meta_minimum_width = fixed_meta_width + timer_area_minimum_width
+    minimum_region_width = max(task_area_minimum_width, meta_minimum_width)
     minimum_card_width = (
         max(values.card_frame_horizontal_inset, 0)
         + max(values.complete_area_width, 0)
-        + spacing_width
+        + main_spacing
         + minimum_region_width
     )
-
-    if region_budget >= task_area_minimum_width + timer_preferred_width:
-        timer_area_width = timer_preferred_width
-        task_area_width = region_budget - timer_area_width
-    elif region_budget >= minimum_region_width:
-        task_area_width = task_area_minimum_width
-        timer_area_width = region_budget - task_area_width
-    else:
-        task_area_width = task_area_minimum_width
-        timer_area_width = timer_area_minimum_width
 
     task_text_available_width = max(
         task_area_width - max(values.task_text_horizontal_inset, 0),
@@ -135,16 +135,16 @@ def calculate_task_card_layout(values: TaskCardLayoutInput) -> TaskCardLayout:
         logical_line_count * max(values.line_height, 0)
         + max(values.task_text_vertical_inset, 0)
     )
+    meta_row_height = max(values.priority_height, values.timer_height, 0)
     content_height = (
         max(values.content_layout_vertical_inset, 0)
         + task_text_height
         + max(values.content_layout_spacing, 0)
-        + max(values.priority_height, 0)
+        + meta_row_height
     )
     child_height = max(
         content_height,
         max(values.complete_area_height, 0),
-        max(values.timer_height, 0),
     )
     card_height = max(
         values.card_minimum_height,

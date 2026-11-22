@@ -27,7 +27,7 @@ class ApplicationIdentityTest(unittest.TestCase):
 
     def test_visible_identity_targets_v2_without_changing_settings_namespace(self) -> None:
         self.assertEqual(APP_NAME, "桌面待办事项")
-        self.assertEqual(APP_VERSION, "2.2.0")
+        self.assertEqual(APP_VERSION, "3.0.0")
         self.assertNotIn("v1", APP_NAME)
         self.assertEqual(SETTINGS_ORGANIZATION, "MyProductiveApp")
         self.assertEqual(SETTINGS_APPLICATION, "桌面待办事项 v1")
@@ -99,6 +99,7 @@ class ApplicationIdentityTest(unittest.TestCase):
                 call("windowState"),
                 call("filterOption"),
                 call("sortOption"),
+                call("windowAlwaysOnTop"),
             ],
         )
         restore_geometry.assert_called_once_with(legacy_geometry)
@@ -106,7 +107,7 @@ class ApplicationIdentityTest(unittest.TestCase):
         self.assertEqual(window.filter_combo.currentText(), "全部")
         self.assertEqual(window.sort_combo.currentText(), "创建时间 (新->旧)")
         self.assertEqual(window.windowTitle(), f"{APP_NAME} - v{APP_VERSION}")
-        self.assertEqual(window.tray_icon.toolTip(), APP_NAME)
+        self.assertEqual(window.tray_icon.toolTip(), f"{APP_NAME} (暂无待办)")
 
     @staticmethod
     def _close_window(window: ModernTodoAppWindow) -> None:
