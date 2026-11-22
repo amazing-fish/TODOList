@@ -2,18 +2,20 @@
 
 一个基于 PySide6 的轻量桌面待办工具，提供任务管理、截止时间、提醒与推迟、系统托盘、深浅色主题和本地数据保护。
 
-当前版本为 **v3.0.0**，版本号的唯一来源是 `todo_app/constants.py` 中的 `APP_VERSION`。
+当前版本为 **v3.1.0**，版本号的唯一来源是 `todo_app/constants.py` 中的 `APP_VERSION`。
 
 ## 功能概览
 
-- **卡片二维信息架构**：每张卡片采用“上正文（最多 3 行全宽预览）+ 下元信息（优先级、预留循环槽位、绝对时刻与相对倒计时）”双行布局；支持双击编辑、右键上下文菜单，以及悬停移入且可选中复制的详情浮层。
-- **快录、搜索与态势认知**：顶部内置常驻快录栏（`Enter` 直建，`Shift+Enter` 展开完整表单）、实时关键词搜索框（`Ctrl+F` 聚焦，`Esc` 清空退出）、未完成/逾期动态计数与托盘悬停统计、空筛选一键重置按钮与窗口置顶（Pin）持久化开关。
-- **安全撤销与通知语义拆分**：删除任务、在未完成视图下勾选完成及清除截止时间统一通过底部 5 秒 `UndoToastBar`（支持 `Ctrl+Z`）即时撤销；提醒窗拆分为“完成”“推迟1h ▾（二级菜单含取消截止时间）”“编辑”“知道了”，不再隐藏清除死线。
+- **卡片二维信息架构与重复任务**：每张卡片采用“上正文（最多 3 行全宽预览）+ 下元信息（优先级、`↻` 周期循环徽章、绝对时刻与相对倒计时）”双行布局；支持每日/工作日/每周指定星期/每月重复（含跳过周末），勾选完成自动顺延下一周期并提供右键“结束重复并完成”。
+- **快录、搜索与态势认知**：顶部内置常驻快录栏（`Enter` 直建，`Shift+Enter` 展开完整表单）、实时关键词搜索框（`Ctrl+F` 聚焦，`Esc` 清空退出）、未完成/逾期/勿扰动态计数与托盘悬停统计、空筛选一键重置按钮、设置入口与窗口置顶（Pin）持久化开关。
+- **设置、勿扰与数据维护**：右上角“设置”弹窗（`Ctrl+,`）与系统托盘菜单支持“跟随系统 / 浅色 / 深色”主题偏好、Windows 开机自启开关（`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`）、提示音开关、手动/1 小时定时勿扰（DND）、一键清理已完成任务（支持 5 秒撤销）、数据目录直达与 JSON 导入/导出备份。
+- **安全撤销与通知语义拆分**：删除任务、在未完成视图下勾选完成、推进/结束重复任务、清理已完成及导入任务统一通过底部 5 秒 `UndoToastBar`（支持 `Ctrl+Z`）即时撤销；提醒窗拆分为“完成”“推迟1h ▾（二级菜单含取消截止时间）”“编辑”“知道了”，不再隐藏清除死线。
 - **创建与编辑流**：编辑对话框收敛为轻量表单（`360px` 最小宽度）、内置快捷时间预设芯片、无截止时禁用提前提醒、`Ctrl+Enter` 快捷保存，并将过去时间转为温和逾期提示。
 - **信任与存储底座**：单实例守护 + 外部唤醒、`logs/todolist.log` 轮转日志、原子保存、单份备份与损坏只读横幅隔离恢复，以及内置提醒/到期轻提示 WAV 音效。
 
 ## v3.x / v2.x 近期变化
 
+- **v3.1.0（Phase 3 周期任务、设置中心与发布韧性）**：新增 `recurrence` 周期任务引擎（每日/跳过周末/每周多日/每月月末对齐，完成顺延下一周期与右键“结束重复并完成”）；新增轻量 `SettingsDialog`、主题偏好覆盖（系统/浅色/深色）、Windows 开机自启开关（依赖注入注册表适配）、提示音与手动/1 小时勿扰模式（同步托盘菜单）、一键清理已完成与 JSON 导入/导出（5 秒撤销与只读保护）；升级 `requirements-dev.txt` 完整锁死 PyInstaller `6.21.0` 间接依赖，重构 `build-exe.yml` 仅对 `main` 预览启用可取消并发与 `build/` 缓存，新增带二次确认的 `workflow_dispatch` 补发/重跑入口及构建摘要（含耗时与 SHA-256）。
 - **v3.0.0（Phase 2 架构与交互重构）**：卡片升级为二维双行布局，消除 320px 窄屏正文与计时挤压；详情浮层支持悬停移入与可选中复制；新增双击编辑与右键上下文菜单；新增顶部快录栏、实时搜索、动态计数、一键重置筛选、Pin 置顶持久化与完整快捷键流；删除/完成/清除截止改为底部 5 秒可撤销条；通知窗拆分为中性“知道了”（保留原截止）与“编辑”，将“取消截止时间”移入推迟下拉菜单；编辑窗增加时间预设芯片与 `Ctrl+Enter` 保存。
 - **v2.2.0**：新增单实例守护与轮转文件日志；主文件损坏只读降级时顶部显示警告横幅并支持确认后隔离恢复可写；修复“截止日期 (远->近)”反转与已完成沉底，“今天到期”纳入逾期并新增“已逾期”筛选，持久化筛选/排序偏好；提前提醒推迟不再篡改未到达的原截止时间；补齐内置轻提示音频资源，提醒窗改用非抢焦置顶与“打开主窗口”入口并停止强行拉起主窗口。
 
@@ -80,20 +82,22 @@ python main.py
 ├── tests/                   # unittest 自动化测试
 ├── todo_app/
 │   ├── app.py               # QApplication 初始化、单实例守护与窗口启动
+│   ├── autostart.py         # Windows 开机自启注册表适配与命令行构造
 │   ├── constants.py         # 应用身份、版本、资源与主题常量
 │   ├── dialogs.py           # 任务编辑与软件内提醒窗口
 │   ├── fonts.py             # 字体注册与回退
 │   ├── layout.py            # 卡片与详情浮层的纯函数布局模型
 │   ├── logging_config.py    # 数据目录轮转文件日志配置
-│   ├── scrolling.py         # 列表滚轮缓动与直接定位协调
-│   ├── single_instance.py   # QLocalServer 单实例锁与外部唤醒
-│   ├── main_window.py       # 主窗口、列表、提醒与托盘流程
+│   ├── main_window.py       # 主窗口、列表、提醒、勿扰、数据维护与托盘流程
 │   ├── paths.py             # 开发/打包环境路径解析
-│   ├── scheduling.py        # 编辑、提醒与推迟规则
+│   ├── scheduling.py        # 编辑、提醒、推迟与重复周期调度规则
+│   ├── scrolling.py         # 列表滚轮缓动与直接定位协调
+│   ├── settings_dialog.py   # 轻量设置与数据工具对话框
+│   ├── single_instance.py   # QLocalServer 单实例锁与外部唤醒
 │   ├── storage.py           # 数据迁移、原子保存、备份与损坏隔离恢复
-│   ├── theme.py             # 系统主题检测与调色板管理
+│   ├── theme.py             # 系统主题检测、手动偏好覆盖与调色板管理
 │   ├── utils.py             # 图标、声音等通用工具
-│   └── widgets.py           # 待办卡片与详情浮层组件
+│   └── widgets.py           # 待办卡片、重复徽章、撤销条与详情浮层组件
 ├── AGENTS.md                # 仓库协作与验证要求
 ├── anchor.md                # 当前有效的技术与行为约束
 ├── main.py                  # 程序入口
@@ -133,11 +137,12 @@ macOS/Linux 使用 PyInstaller 时，需要将 `--add-data` 的分隔符从 `;` 
 
 `.github/workflows/build-exe.yml` 的当前规则：
 
-- 手动触发、推送到 `main` 或推送 `v*` 标签时，在 Windows Runner 生成单文件 `TODOList.exe`。
-- 所有构建都会上传名称包含来源和短提交 SHA、保留 7 天的 Actions Artifact。
-- `main` 的最新构建会按 `APP_VERSION` 更新可移动的预发布标签，例如 `2.1.8` 对应 `pre2.1.8`，并更新不作为 Latest 的 Pre-release。
-- 手动构建只产生临时 Artifact，不修改标签或 Release。
-- 只有发布者显式推送、保持不可变的 `v*` 标签才创建或更新正式 Release；同一标签的工作流重跑可以覆盖同名资产以恢复失败发布。
+- 推送到 `main`、推送 `v*` 标签或手动触发 `workflow_dispatch` 时，在 Windows Runner 生成单文件 `TODOList.exe`。
+- 仅 `push` 到 `main` 使用固定并发组 `build-exe-main-preview`（取消旧的预览运行）并启用 `build/` workpath 缓存（不传 `--clean`）以加速增量构建；`v*` 标签和 `workflow_dispatch` 各自隔离并发并强制 `--clean --onefile` 干净打包。
+- 所有构建都在依赖安装前先校验 `todo_app/constants.py` 的 `APP_VERSION` 与标签一致性，上传保留 7 天的 Actions Artifact，并在 Step Summary 输出构建耗时、体积与 SHA-256。
+- `main` 的最新构建会按 `APP_VERSION` 更新可移动的预发布标签（如 `pre3.1.0`）并更新不作为 Latest 的 Pre-release。
+- `workflow_dispatch` 默认仅产出临时 Artifact（不改动标签或 Release）；仅当显式传入 `release_tag`、输入完全一致的 `confirm_release_tag` 且勾选 `publish_release=true` 时，才按原标签提交执行干净构建并幂等覆盖对应 Release 的 `TODOList.exe` 资产（不会移动任何 Git ref）。
+- 只有发布者显式推送、保持不可变的 `v*` 标签才创建或更新正式 Release；`requirements-dev.txt` 额外精确锁定 PyInstaller 间接依赖。
 
 图标、字体和字体许可证通过 `--add-data "assets;assets"` 一并打包，运行时由 `resource_path` 统一解析源码目录与 PyInstaller `_MEIPASS` 路径。
 

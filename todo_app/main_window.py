@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import copy
+import json
 import sys
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional
 from textwrap import dedent
 
@@ -36,6 +38,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -65,22 +68,34 @@ from .constants import (
     SETTINGS_ORGANIZATION,
     TASK_CARD_LIST_GAP,
 )
+from .autostart import (
+    is_autostart_enabled,
+    is_autostart_supported,
+    set_autostart_enabled,
+)
 from .dialogs import NotificationDialog, TaskEditDialog
 from .layout import calculate_card_width
-from .scheduling import build_edit_update_fields, build_snooze_update_fields
+from .scheduling import (
+    build_edit_update_fields,
+    build_recurrence_completion_fields,
+    build_snooze_update_fields,
+    normalize_recurrence,
+)
 from .scrolling import SmoothScrollListWidget
+from .settings_dialog import SettingsDialog
 from . import storage as _storage
 from .storage import (
     StorageStatus,
     get_last_load_status,
     get_last_save_status,
     load_todos,
+    normalize_todo_list,
     quarantine_damaged_main_file,
     save_todos,
 )
 from .utils import get_icon, play_sound_effect
 from .widgets import TodoItemWidget, UndoToastBar
-from .theme import ThemeColors, get_theme_manager
+from .theme import ThemeColors, ThemePreference, get_theme_manager
 
 
 _MAIN_CONTENT_MARGIN = 15
@@ -218,6 +233,9 @@ class ModernTodoAppWindow(QMainWindow):
 
         self._task_edit_dialog: Optional[TaskEditDialog] = None
         self._always_on_top = False
+        self._sound_enabled = True
+        self._dnd_enabled = False
+        self._dnd_until_utc: Optional[datetime] = None
         self._empty_placeholder_item: Optional[QListWidgetItem] = None
         self._empty_placeholder_widget: Optional[QWidget] = None
         self._empty_placeholder_label: Optional[QLabel] = None
@@ -287,6 +305,12 @@ class ModernTodoAppWindow(QMainWindow):
         self.add_button.setAccessibleName("添加任务")
         self.add_button.clicked.connect(lambda _checked=False: self.show_add_task_dialog())
 
+        self.settings_button = QPushButton("设置")
+        self.settings_button.setObjectName("settingsButton")
+        self.settings_button.setToolTip("打开设置与数据工具 (Ctrl+,)")
+        self.settings_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.settings_button.clicked.connect(lambda _checked=False: self.open_settings_dialog())
+
         self.pin_button = QPushButton("置顶")
         self.pin_button.setObjectName("pinWindowButton")
         self.pin_button.setCheckable(True)
@@ -296,13 +320,14 @@ class ModernTodoAppWindow(QMainWindow):
 
         list_header_layout = QHBoxLayout()
         list_header_layout.setContentsMargins(0, 0, _LIST_SCROLLBAR_WIDTH, 0)
-        list_header_layout.setSpacing(8)
+        list_header_layout.setSpacing(6)
         self.list_label = QLabel("待办列表")
         self.status_summary_label = QLabel()
         self.status_summary_label.setObjectName("statusSummaryLabel")
         list_header_layout.addWidget(self.list_label)
         list_header_layout.addWidget(self.status_summary_label)
         list_header_layout.addStretch(1)
+        list_header_layout.addWidget(self.settings_button)
         list_header_layout.addWidget(self.pin_button)
         list_header_layout.addWidget(self.add_button)
         main_layout.addLayout(list_header_layout)
@@ -388,6 +413,8 @@ class ModernTodoAppWindow(QMainWindow):
         self._shortcut_undo.activated.connect(self._handle_undo_shortcut)
         self._shortcut_delete = QShortcut(QKeySequence("Delete"), self)
         self._shortcut_delete.activated.connect(self._handle_delete_shortcut)
+        self._shortcut_settings = QShortcut(QKeySequence("Ctrl+,"), self)
+        self._shortcut_settings.activated.connect(self.open_settings_dialog)
 
     def _apply_palette(self, palette: ThemeColors) -> None:
         """根据主题配色刷新窗口视觉样式。"""
@@ -412,27 +439,30 @@ class ModernTodoAppWindow(QMainWindow):
             self.status_summary_label.setStyleSheet(
                 f"font-size: 9pt; color: {palette.text_secondary}; background-color: transparent;"
             )
+        header_pill_button_style = f"""
+            QPushButton#pinWindowButton,
+            QPushButton#settingsButton {{
+                background-color: {palette.action_button_bg};
+                color: {palette.text_primary};
+                border: 1px solid {palette.action_button_border};
+                border-radius: 5px;
+                padding: 4px 7px;
+                font-size: 9pt;
+            }}
+            QPushButton#pinWindowButton:hover,
+            QPushButton#settingsButton:hover {{
+                border-color: {palette.accent};
+            }}
+            QPushButton#pinWindowButton:checked {{
+                background-color: {palette.accent};
+                color: {palette.inverse_text};
+                border-color: {palette.accent};
+            }}
+        """
+        if hasattr(self, "settings_button"):
+            self.settings_button.setStyleSheet(header_pill_button_style)
         if hasattr(self, "pin_button"):
-            self.pin_button.setStyleSheet(
-                f"""
-                QPushButton#pinWindowButton {{
-                    background-color: {palette.action_button_bg};
-                    color: {palette.text_primary};
-                    border: 1px solid {palette.action_button_border};
-                    border-radius: 5px;
-                    padding: 4px 8px;
-                    font-size: 9pt;
-                }}
-                QPushButton#pinWindowButton:hover {{
-                    border-color: {palette.accent};
-                }}
-                QPushButton#pinWindowButton:checked {{
-                    background-color: {palette.accent};
-                    color: {palette.inverse_text};
-                    border-color: {palette.accent};
-                }}
-                """
-            )
+            self.pin_button.setStyleSheet(header_pill_button_style)
         line_edit_style = f"""
             QLineEdit {{
                 background-color: {palette.input_background};
@@ -774,6 +804,7 @@ class ModernTodoAppWindow(QMainWindow):
     # --- 主循环刷新 ---
     def tick_update(self) -> None:
         now_utc = datetime.now(timezone.utc)
+        dnd_active = self.is_dnd_active(now_utc=now_utc)
         changed_ids: set[int] = set()
         notification_requests: list[tuple[dict, bool]] = []
         for original_ref in self.todos:
@@ -792,6 +823,8 @@ class ModernTodoAppWindow(QMainWindow):
                 except ValueError:
                     original_ref["snoozeUntil"] = None
                     changed_ids.add(original_ref["id"])
+            if dnd_active:
+                continue
             notification_request = self._check_for_notification(original_ref, now_utc)
             if notification_request:
                 notification_requests.append(notification_request)
@@ -801,7 +834,7 @@ class ModernTodoAppWindow(QMainWindow):
             self._persist_todos()
             self.update_list_widget(changed_ids=changed_ids)
         self._refresh_visible_todo_timers(current_time_utc=now_utc)
-        if notification_requests:
+        if notification_requests and not dnd_active:
             self._show_notification_batch(notification_requests)
 
     def _refresh_visible_todo_timers(
@@ -878,10 +911,13 @@ class ModernTodoAppWindow(QMainWindow):
         return None
 
     def _show_notification_batch(self, requests: list[tuple[dict, bool]]) -> None:
-        if any(is_due for _, is_due in requests):
-            play_sound_effect(self.due_sound, DUE_SOUND_PATH)
-        else:
-            play_sound_effect(self.reminder_sound, REMINDER_SOUND_PATH)
+        if self.is_dnd_active():
+            return
+        if self._sound_enabled:
+            if any(is_due for _, is_due in requests):
+                play_sound_effect(self.due_sound, DUE_SOUND_PATH)
+            else:
+                play_sound_effect(self.reminder_sound, REMINDER_SOUND_PATH)
 
         dialog = self._notification_dialog
         if dialog is None:
@@ -902,21 +938,40 @@ class ModernTodoAppWindow(QMainWindow):
         if self._notification_dialog is self.sender():
             self._notification_dialog = None
 
+    def _complete_todo_in_place(
+        self,
+        todo: dict,
+        *,
+        now_utc: Optional[datetime] = None,
+    ) -> tuple[bool, bool]:
+        """完成待办；若配置了重复周期则自动推进到下一次截止时间。"""
+
+        if todo.get("completed", False):
+            return False, False
+        recurrence_fields = build_recurrence_completion_fields(todo, now_utc=now_utc)
+        if recurrence_fields is not None:
+            todo.update(recurrence_fields)
+            return True, True
+        todo.update(
+            {
+                "completed": True,
+                "snoozeUntil": None,
+                "notifiedForReminder": True,
+                "notifiedForDue": True,
+            }
+        )
+        return True, False
+
     def _handle_notification_complete(self, todo_ids: list[int]) -> None:
         requested_ids = {int(todo_id) for todo_id in todo_ids}
         changed_ids: set[int] = set()
+        now_utc = datetime.now(timezone.utc)
         for todo in self.todos:
             if todo.get("id") not in requested_ids or todo.get("completed", False):
                 continue
-            todo.update(
-                {
-                    "completed": True,
-                    "snoozeUntil": None,
-                    "notifiedForReminder": True,
-                    "notifiedForDue": True,
-                }
-            )
-            changed_ids.add(todo["id"])
+            changed, _advanced = self._complete_todo_in_place(todo, now_utc=now_utc)
+            if changed:
+                changed_ids.add(todo["id"])
 
         self._remove_notification_tasks(list(requested_ids))
         if changed_ids:
@@ -1272,6 +1327,7 @@ class ModernTodoAppWindow(QMainWindow):
                     "priority": new_data["priority"],
                     "dueDate": new_data["dueDate"],
                     "reminderOffset": new_data["reminderOffset"],
+                    "recurrence": normalize_recurrence(new_data.get("recurrence")),
                     "completed": False,
                     "createdAt": datetime.now(timezone.utc).isoformat(),
                     "snoozeUntil": None,
@@ -1357,7 +1413,55 @@ class ModernTodoAppWindow(QMainWindow):
     def handle_toggle_complete_request(self, todo_id: object) -> None:
         self.toggle_complete_todo(todo_id)
 
+    @Slot(object)
+    def handle_finish_recurrence_request(self, todo_id: object) -> None:
+        normalized_id = self._normalize_todo_id(todo_id)
+        if normalized_id is None:
+            print(f"警告: 结束重复任务时收到无效ID: {todo_id!r}")
+            return
+        snapshot: Optional[dict] = None
+        for todo in self.todos:
+            if todo.get("id") == normalized_id:
+                snapshot = copy.deepcopy(todo)
+                todo.update(
+                    {
+                        "completed": True,
+                        "snoozeUntil": None,
+                        "notifiedForReminder": True,
+                        "notifiedForDue": True,
+                    }
+                )
+                self._remove_notification_task(normalized_id)
+                break
+        if snapshot is None:
+            return
+        self._persist_todos()
+        self.update_list_widget(changed_ids={normalized_id})
+        if hasattr(self, "undo_toast_bar"):
+            raw_text = str(snapshot.get("text", ""))
+            preview = raw_text[:18] + ("…" if len(raw_text) > 18 else "")
+
+            def _undo_finish() -> None:
+                for item in self.todos:
+                    if item.get("id") == normalized_id:
+                        item.update(
+                            {
+                                "completed": bool(snapshot.get("completed", False)),
+                                "snoozeUntil": snapshot.get("snoozeUntil"),
+                                "notifiedForReminder": bool(
+                                    snapshot.get("notifiedForReminder", False)
+                                ),
+                                "notifiedForDue": bool(snapshot.get("notifiedForDue", False)),
+                            }
+                        )
+                        self._persist_todos()
+                        self.update_list_widget(changed_ids={normalized_id})
+                        break
+
+            self.undo_toast_bar.show_toast(f"已结束重复「{preview}」", _undo_finish)
+
     def toggle_complete_todo(self, todo_id: object, called_from_notification: bool = False) -> None:
+        del called_from_notification
         normalized_id = self._normalize_todo_id(todo_id)
         if normalized_id is None:
             print(f"警告: 尝试切换任务完成状态时收到无效ID: {todo_id!r}")
@@ -1366,30 +1470,25 @@ class ModernTodoAppWindow(QMainWindow):
         changed = False
         completed_snapshot: Optional[dict] = None
         became_completed = False
+        advanced_recurrence = False
+        now_utc = datetime.now(timezone.utc)
         for index, todo in enumerate(self.todos):
             if todo.get("id") == normalized_id:
                 completed_snapshot = copy.deepcopy(todo)
-                is_now_completed = not todo.get("completed", False)
-                became_completed = is_now_completed
-                self.todos[index]["completed"] = is_now_completed
-                if is_now_completed:
-                    self.todos[index].update(
-                        {
-                            "snoozeUntil": None,
-                            "notifiedForReminder": True,
-                            "notifiedForDue": True,
-                        }
-                    )
+                if not todo.get("completed", False):
+                    changed, advanced_recurrence = self._complete_todo_in_place(todo, now_utc=now_utc)
+                    became_completed = not advanced_recurrence
                     self._remove_notification_task(normalized_id)
                 else:
                     self.todos[index].update(
                         {
+                            "completed": False,
                             "notifiedForReminder": False,
                             "notifiedForDue": False,
                             "lastNotifiedAt": None,
                         }
                     )
-                changed = True
+                    changed = True
                 break
 
         if changed:
@@ -1397,36 +1496,42 @@ class ModernTodoAppWindow(QMainWindow):
             self.update_list_widget(changed_ids={normalized_id})
             current_filter = self.filter_combo.currentText()
             hides_completed = current_filter in ("未完成", "今天到期", "已逾期", "高优先级")
-            if (
-                became_completed
-                and hides_completed
-                and completed_snapshot is not None
+            should_offer_undo = (
+                completed_snapshot is not None
                 and hasattr(self, "undo_toast_bar")
-            ):
+                and (advanced_recurrence or (became_completed and hides_completed))
+            )
+            if should_offer_undo:
                 raw_text = str(completed_snapshot.get("text", ""))
                 preview = raw_text[:18] + ("…" if len(raw_text) > 18 else "")
+                toast_text = (
+                    f"已完成本轮「{preview}」，已安排下一次"
+                    if advanced_recurrence
+                    else f"已完成「{preview}」"
+                )
 
                 def _undo_complete() -> None:
                     for item in self.todos:
                         if item.get("id") == normalized_id:
-                            item.update(
-                                {
-                                    "completed": bool(completed_snapshot.get("completed", False)),
-                                    "snoozeUntil": completed_snapshot.get("snoozeUntil"),
-                                    "notifiedForReminder": bool(
-                                        completed_snapshot.get("notifiedForReminder", False)
-                                    ),
-                                    "notifiedForDue": bool(
-                                        completed_snapshot.get("notifiedForDue", False)
-                                    ),
-                                    "lastNotifiedAt": completed_snapshot.get("lastNotifiedAt"),
-                                }
-                            )
+                            restore_fields = {
+                                "completed": bool(completed_snapshot.get("completed", False)),
+                                "snoozeUntil": completed_snapshot.get("snoozeUntil"),
+                                "notifiedForReminder": bool(
+                                    completed_snapshot.get("notifiedForReminder", False)
+                                ),
+                                "notifiedForDue": bool(
+                                    completed_snapshot.get("notifiedForDue", False)
+                                ),
+                                "lastNotifiedAt": completed_snapshot.get("lastNotifiedAt"),
+                            }
+                            if advanced_recurrence:
+                                restore_fields["dueDate"] = completed_snapshot.get("dueDate")
+                            item.update(restore_fields)
                             self._persist_todos()
                             self.update_list_widget(changed_ids={normalized_id})
                             break
 
-                self.undo_toast_bar.show_toast(f"已完成「{preview}」", _undo_complete)
+                self.undo_toast_bar.show_toast(toast_text, _undo_complete)
         else:
             print(f"警告: 切换ID {normalized_id} 任务完成状态时未找到。")
 
@@ -1578,6 +1683,9 @@ class ModernTodoAppWindow(QMainWindow):
             self.handle_toggle_complete_request
         )
         item_widget.request_quick_snooze.connect(self._handle_card_quick_snooze)
+        item_widget.request_finish_recurrence.connect(
+            self.handle_finish_recurrence_request
+        )
         widget_size_hint = item_widget.sizeHint()
         item_height = max(widget_size_hint.height(), item_widget.minimumHeight())
         list_item.setSizeHint(QSize(0, item_height))
@@ -1838,6 +1946,9 @@ class ModernTodoAppWindow(QMainWindow):
         else:
             summary_text = f"待办 {incomplete_count}"
 
+        if self.is_dnd_active(now_utc=now_utc):
+            summary_text = f"{summary_text} · 勿扰"
+
         if hasattr(self, "status_summary_label"):
             self.status_summary_label.setText(summary_text)
         if hasattr(self, "tray_icon"):
@@ -1958,6 +2069,13 @@ class ModernTodoAppWindow(QMainWindow):
         tray_menu.addAction("显示/隐藏窗口", self.toggle_window_visibility)
         tray_menu.addAction("快速添加任务...", self.quick_add_from_tray)
         tray_menu.addSeparator()
+        self.tray_dnd_action = tray_menu.addAction("勿扰模式")
+        self.tray_dnd_action.setCheckable(True)
+        self.tray_dnd_action.setChecked(self._dnd_enabled)
+        self.tray_dnd_action.toggled.connect(self.set_dnd_enabled)
+        tray_menu.addAction("勿扰 1 小时", self.enable_dnd_for_one_hour)
+        tray_menu.addAction("设置与工具...", self.open_settings_dialog)
+        tray_menu.addSeparator()
         tray_menu.addAction("退出应用", self.quit_application)
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.activated.connect(self._on_tray_icon_activated)
@@ -2021,6 +2139,288 @@ class ModernTodoAppWindow(QMainWindow):
             self.activateWindow()
             self._restore_notification_dialog()
 
+    @staticmethod
+    def _coerce_bool_setting(raw_value: object, default: bool) -> bool:
+        if isinstance(raw_value, bool):
+            return raw_value
+        if isinstance(raw_value, int):
+            return bool(raw_value)
+        if isinstance(raw_value, str):
+            lowered = raw_value.strip().lower()
+            if lowered in ("true", "1", "yes"):
+                return True
+            if lowered in ("false", "0", "no"):
+                return False
+        return default
+
+    # --- 设置、勿扰与数据维护 ---
+    def is_dnd_active(self, *, now_utc: Optional[datetime] = None) -> bool:
+        if not self._dnd_enabled:
+            return False
+        if self._dnd_until_utc is None:
+            return True
+        current = now_utc or datetime.now(timezone.utc)
+        if current < self._dnd_until_utc:
+            return True
+        self._dnd_enabled = False
+        self._dnd_until_utc = None
+        self.settings.setValue("dndEnabled", False)
+        self.settings.setValue("dndUntilUtc", "")
+        self._sync_dnd_ui()
+        return False
+
+    def dnd_status_text(self) -> str:
+        if not self.is_dnd_active():
+            return "未开启"
+        if self._dnd_until_utc is None:
+            return "已开启（手动）"
+        local_until = self._dnd_until_utc.astimezone().strftime("%H:%M")
+        return f"已开启（至 {local_until}）"
+
+    def _sync_dnd_ui(self) -> None:
+        active = self._dnd_enabled and (
+            self._dnd_until_utc is None or datetime.now(timezone.utc) < self._dnd_until_utc
+        )
+        if hasattr(self, "tray_dnd_action"):
+            self.tray_dnd_action.blockSignals(True)
+            self.tray_dnd_action.setChecked(active)
+            self.tray_dnd_action.blockSignals(False)
+        self._update_status_summary()
+
+    def set_theme_preference(self, preference: str | ThemePreference) -> None:
+        coerced = ThemePreference.coerce(preference)
+        self.theme_manager.set_preference(coerced)
+        self.settings.setValue("themePreference", coerced.value)
+        self.settings.sync()
+
+    def set_sound_enabled(self, enabled: bool) -> None:
+        self._sound_enabled = bool(enabled)
+        self.settings.setValue("soundEnabled", self._sound_enabled)
+        self.settings.sync()
+
+    def set_dnd_enabled(self, enabled: bool) -> None:
+        self._dnd_enabled = bool(enabled)
+        if not self._dnd_enabled:
+            self._dnd_until_utc = None
+        else:
+            self._dnd_until_utc = None
+        self.settings.setValue("dndEnabled", self._dnd_enabled)
+        self.settings.setValue("dndUntilUtc", "")
+        self.settings.sync()
+        self._sync_dnd_ui()
+
+    def enable_dnd_for_one_hour(self) -> None:
+        until_utc = datetime.now(timezone.utc) + timedelta(hours=1)
+        self._dnd_enabled = True
+        self._dnd_until_utc = until_utc
+        self.settings.setValue("dndEnabled", True)
+        self.settings.setValue("dndUntilUtc", until_utc.isoformat())
+        self.settings.sync()
+        self._sync_dnd_ui()
+
+    def _set_autostart_enabled(self, enabled: bool, dialog: Optional[SettingsDialog] = None) -> None:
+        desired = bool(enabled)
+        try:
+            actual = set_autostart_enabled(desired)
+            succeeded = actual == desired
+        except OSError as exc:
+            succeeded = False
+            print(f"警告: 更新开机自启配置失败: {exc}")
+        if not succeeded:
+            QMessageBox.warning(self, "自启设置失败", "未能更新 Windows 开机自启注册表项。")
+            if dialog is not None:
+                dialog.autostart_checkbox.blockSignals(True)
+                dialog.autostart_checkbox.setChecked(is_autostart_enabled())
+                dialog.autostart_checkbox.blockSignals(False)
+
+    def clear_completed_todos(self) -> int:
+        if self._is_storage_read_only():
+            self._sync_storage_warning_banner()
+            raise RuntimeError("只读恢复模式下无法清理任务，请先恢复可写存储。")
+        completed_count = sum(
+            1 for item in self.todos if isinstance(item, dict) and item.get("completed", False)
+        )
+        if completed_count == 0:
+            return 0
+        previous_snapshot = copy.deepcopy(self.todos)
+        self.todos = [
+            item
+            for item in self.todos
+            if not (isinstance(item, dict) and item.get("completed", False))
+        ]
+        self._persist_todos()
+        self.update_list_widget()
+        if hasattr(self, "undo_toast_bar"):
+
+            def _undo_clear() -> None:
+                self.todos = copy.deepcopy(previous_snapshot)
+                self._persist_todos()
+                self.update_list_widget()
+
+            self.undo_toast_bar.show_toast(f"已清理 {completed_count} 条已完成任务", _undo_clear)
+        return completed_count
+
+    def export_todos_to_file(self, file_path: str | Path) -> int:
+        target = Path(file_path)
+        payload = {
+            "version": APP_VERSION,
+            "exportedAt": datetime.now(timezone.utc).isoformat(),
+            "todos": copy.deepcopy(self.todos),
+        }
+        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return len(self.todos)
+
+    def import_todos_from_file(self, file_path: str | Path) -> int:
+        if self._is_storage_read_only():
+            self._sync_storage_warning_banner()
+            raise RuntimeError("只读恢复模式下无法导入任务，请先恢复可写存储。")
+        source = Path(file_path)
+        parsed = json.loads(source.read_text(encoding="utf-8"))
+        if isinstance(parsed, dict):
+            raw_items = parsed.get("todos")
+        elif isinstance(parsed, list):
+            raw_items = parsed
+        else:
+            raw_items = None
+        if not isinstance(raw_items, list):
+            raise ValueError("导入文件必须是任务数组或包含 todos 列表的 JSON 对象。")
+        normalized = normalize_todo_list(raw_items)
+        if not normalized:
+            return 0
+        previous_snapshot = copy.deepcopy(self.todos)
+        existing_ids = {
+            int(item["id"])
+            for item in self.todos
+            if isinstance(item, dict) and isinstance(item.get("id"), int)
+        }
+        next_id = max(existing_ids, default=0) + 1
+        for item in normalized:
+            candidate_id = item.get("id")
+            if not isinstance(candidate_id, int) or candidate_id <= 0 or candidate_id in existing_ids:
+                while next_id in existing_ids:
+                    next_id += 1
+                item["id"] = next_id
+                next_id += 1
+            existing_ids.add(int(item["id"]))
+        self.todos.extend(normalized)
+        self._persist_todos()
+        self.update_list_widget()
+        if hasattr(self, "undo_toast_bar"):
+
+            def _undo_import() -> None:
+                self.todos = copy.deepcopy(previous_snapshot)
+                self._persist_todos()
+                self.update_list_widget()
+
+            self.undo_toast_bar.show_toast(f"已导入 {len(normalized)} 条待办", _undo_import)
+        return len(normalized)
+
+    def _prompt_clear_completed_todos(self, dialog: Optional[SettingsDialog] = None) -> None:
+        completed_count = sum(
+            1 for item in self.todos if isinstance(item, dict) and item.get("completed", False)
+        )
+        if completed_count <= 0:
+            return
+        reply = QMessageBox.question(
+            dialog or self,
+            "清理已完成任务",
+            f"确定要删除全部 {completed_count} 条已完成任务吗？（可在 5 秒内撤销）",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            removed = self.clear_completed_todos()
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(dialog or self, "清理失败", str(exc))
+            return
+        if dialog is not None and removed > 0:
+            dialog.clear_completed_button.setText("清理已完成 (0)")
+            dialog.clear_completed_button.setEnabled(False)
+
+    def _prompt_export_todos(self, dialog: Optional[SettingsDialog] = None) -> None:
+        default_name = f"todolist-backup-{datetime.now().strftime('%Y%m%d')}.json"
+        file_path, _selected_filter = QFileDialog.getSaveFileName(
+            dialog or self,
+            "导出待办数据",
+            default_name,
+            "JSON 文件 (*.json);;所有文件 (*.*)",
+        )
+        if not file_path:
+            return
+        try:
+            count = self.export_todos_to_file(file_path)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(dialog or self, "导出失败", f"导出数据失败：{exc}")
+            return
+        QMessageBox.information(dialog or self, "导出成功", f"已导出 {count} 条待办至：\n{file_path}")
+
+    def _prompt_import_todos(self, dialog: Optional[SettingsDialog] = None) -> None:
+        file_path, _selected_filter = QFileDialog.getOpenFileName(
+            dialog or self,
+            "导入待办数据",
+            "",
+            "JSON 文件 (*.json);;所有文件 (*.*)",
+        )
+        if not file_path:
+            return
+        try:
+            count = self.import_todos_from_file(file_path)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(dialog or self, "导入失败", f"导入数据失败：{exc}")
+            return
+        if dialog is not None:
+            completed_count = sum(
+                1 for item in self.todos if isinstance(item, dict) and item.get("completed", False)
+            )
+            dialog.clear_completed_button.setText(f"清理已完成 ({completed_count})")
+            dialog.clear_completed_button.setEnabled(completed_count > 0)
+        QMessageBox.information(dialog or self, "导入完成", f"成功导入 {count} 条待办。")
+
+    def open_settings_dialog(self) -> int:
+        autostart_supported = is_autostart_supported()
+        autostart_enabled = is_autostart_enabled() if autostart_supported else False
+        completed_count = sum(
+            1 for item in self.todos if isinstance(item, dict) and item.get("completed", False)
+        )
+        dialog = SettingsDialog(
+            theme_preference=self.theme_manager.preference,
+            sound_enabled=self._sound_enabled,
+            dnd_enabled=self.is_dnd_active(),
+            dnd_status_text=self.dnd_status_text(),
+            autostart_supported=autostart_supported,
+            autostart_enabled=autostart_enabled,
+            completed_count=completed_count,
+            parent=self,
+        )
+        dialog.theme_preference_changed.connect(self.set_theme_preference)
+        dialog.sound_enabled_changed.connect(self.set_sound_enabled)
+
+        def _on_dnd_toggled(enabled: bool) -> None:
+            self.set_dnd_enabled(enabled)
+            dialog.dnd_status_label.setText(f"当前勿扰状态：{self.dnd_status_text()}")
+
+        def _on_dnd_1h() -> None:
+            self.enable_dnd_for_one_hour()
+            dialog.dnd_status_label.setText(f"当前勿扰状态：{self.dnd_status_text()}")
+
+        dialog.dnd_toggled.connect(_on_dnd_toggled)
+        dialog.dnd_one_hour_requested.connect(_on_dnd_1h)
+        dialog.autostart_toggled.connect(
+            lambda enabled: self._set_autostart_enabled(enabled, dialog)
+        )
+        dialog.clear_completed_requested.connect(
+            lambda: self._prompt_clear_completed_todos(dialog)
+        )
+        dialog.export_todos_requested.connect(lambda: self._prompt_export_todos(dialog))
+        dialog.import_todos_requested.connect(lambda: self._prompt_import_todos(dialog))
+        dialog.open_storage_dir_requested.connect(self._open_storage_directory)
+        try:
+            return dialog.exec()
+        finally:
+            dialog.deleteLater()
+
     # --- 状态保存 ---
     def save_geometry_and_state(self) -> None:
         self.settings.setValue("geometry", self.saveGeometry())
@@ -2028,6 +2428,13 @@ class ModernTodoAppWindow(QMainWindow):
         self.settings.setValue("filterOption", self.filter_combo.currentText())
         self.settings.setValue("sortOption", self.sort_combo.currentText())
         self.settings.setValue("windowAlwaysOnTop", self._always_on_top)
+        self.settings.setValue("themePreference", self.theme_manager.preference.value)
+        self.settings.setValue("soundEnabled", self._sound_enabled)
+        self.settings.setValue("dndEnabled", self._dnd_enabled)
+        self.settings.setValue(
+            "dndUntilUtc",
+            self._dnd_until_utc.isoformat() if self._dnd_until_utc is not None else "",
+        )
         self.settings.sync()
 
     def restore_geometry_and_state(self) -> None:
@@ -2036,6 +2443,10 @@ class ModernTodoAppWindow(QMainWindow):
         saved_filter = self.settings.value("filterOption")
         saved_sort = self.settings.value("sortOption")
         saved_pin = self.settings.value("windowAlwaysOnTop")
+        saved_theme = self.settings.value("themePreference")
+        saved_sound = self.settings.value("soundEnabled")
+        saved_dnd = self.settings.value("dndEnabled")
+        saved_dnd_until = self.settings.value("dndUntilUtc")
         self._restoring_view_options = True
         try:
             if isinstance(saved_filter, str) and self.filter_combo.findText(saved_filter) >= 0:
@@ -2044,15 +2455,21 @@ class ModernTodoAppWindow(QMainWindow):
                 self.sort_combo.setCurrentText(saved_sort)
         finally:
             self._restoring_view_options = False
-        if isinstance(saved_pin, bool):
-            pinned = saved_pin
-        elif isinstance(saved_pin, int):
-            pinned = bool(saved_pin)
-        elif isinstance(saved_pin, str):
-            pinned = saved_pin.strip().lower() in ("true", "1", "yes")
-        else:
-            pinned = False
+        pinned = self._coerce_bool_setting(saved_pin, False)
         self._apply_pin_state(pinned, persist=False)
+        if isinstance(saved_theme, str) and saved_theme.strip():
+            self.theme_manager.set_preference(ThemePreference.coerce(saved_theme))
+        self._sound_enabled = self._coerce_bool_setting(saved_sound, True)
+        self._dnd_enabled = self._coerce_bool_setting(saved_dnd, False)
+        self._dnd_until_utc = self._parse_iso_datetime(saved_dnd_until)
+        if (
+            self._dnd_enabled
+            and self._dnd_until_utc is not None
+            and self._dnd_until_utc <= datetime.now(timezone.utc)
+        ):
+            self._dnd_enabled = False
+            self._dnd_until_utc = None
+        self._sync_dnd_ui()
         screen = QApplication.primaryScreen()
         target_width, target_height = 320, 640
         if screen:
