@@ -14,17 +14,19 @@ from PySide6.QtCore import (
     QRect,
     QSettings,
     QTimer,
+    QUrl,
     Qt,
     QSize,
     Slot,
 )
-from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtMultimedia import QSoundEffect
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QComboBox,
     QDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -56,7 +58,15 @@ from .dialogs import NotificationDialog, TaskEditDialog
 from .layout import calculate_card_width
 from .scheduling import build_edit_update_fields, build_snooze_update_fields
 from .scrolling import SmoothScrollListWidget
-from .storage import load_todos, save_todos
+from . import storage as _storage
+from .storage import (
+    StorageStatus,
+    get_last_load_status,
+    get_last_save_status,
+    load_todos,
+    quarantine_damaged_main_file,
+    save_todos,
+)
 from .utils import get_icon, play_sound_effect
 from .widgets import TodoItemWidget
 from .theme import ThemeColors, get_theme_manager
@@ -177,9 +187,14 @@ class ModernTodoAppWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.todos: List[Dict] = load_todos()
+        self._load_storage_status: Optional[StorageStatus] = (
+            get_last_load_status() if load_todos is _storage.load_todos else None
+        )
+        self._storage_status: Optional[StorageStatus] = self._load_storage_status
         self._notification_dialog: Optional[NotificationDialog] = None
         self.settings = QSettings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION)
         self._quitting_app = False
+        self._restoring_view_options = False
 
         self.theme_manager = get_theme_manager()
         self._palette: ThemeColors = self.theme_manager.current_palette
@@ -201,12 +216,13 @@ class ModernTodoAppWindow(QMainWindow):
 
         self._build_ui()
         self._create_tray_icon()
+        self.restore_geometry_and_state()
         self.update_list_widget()
+        self._sync_storage_warning_banner()
 
         self.master_timer = QTimer(self)
         self.master_timer.timeout.connect(self.tick_update)
         self.master_timer.start(1000)
-        self.restore_geometry_and_state()
 
         self._on_top_restore_timer = QTimer(self)
         self._on_top_restore_timer.setSingleShot(True)
@@ -235,8 +251,8 @@ class ModernTodoAppWindow(QMainWindow):
         self.filter_label = QLabel("筛选:")
         controls_layout.addWidget(self.filter_label)
         self.filter_combo = _ResponsiveComboBox()
-        self.filter_combo.addItems(["全部", "未完成", "已完成", "今天到期", "高优先级"])
-        self.filter_combo.currentTextChanged.connect(self.update_list_widget)
+        self.filter_combo.addItems(["全部", "未完成", "今天到期", "已逾期", "高优先级", "已完成"])
+        self.filter_combo.currentTextChanged.connect(self._on_view_option_changed)
         controls_layout.addWidget(self.filter_combo)
 
         self.sort_label = QLabel("排序:")
@@ -245,7 +261,7 @@ class ModernTodoAppWindow(QMainWindow):
         self.sort_combo.addItems(
             ["创建时间 (新->旧)", "创建时间 (旧->新)", "截止日期 (近->远)", "截止日期 (远->近)", "优先级 (高->低)"]
         )
-        self.sort_combo.currentTextChanged.connect(self.update_list_widget)
+        self.sort_combo.currentTextChanged.connect(self._on_view_option_changed)
         controls_layout.addWidget(self.sort_combo)
 
         controls_layout.addStretch(1)
@@ -257,6 +273,30 @@ class ModernTodoAppWindow(QMainWindow):
         self.add_button.setAccessibleName("添加任务")
         self.add_button.clicked.connect(self.show_add_task_dialog)
         main_layout.addLayout(controls_layout)
+
+        self.storage_warning_banner = QFrame()
+        self.storage_warning_banner.setObjectName("storageWarningBanner")
+        banner_layout = QVBoxLayout(self.storage_warning_banner)
+        banner_layout.setContentsMargins(10, 8, 10, 8)
+        banner_layout.setSpacing(6)
+        self.storage_warning_label = QLabel()
+        self.storage_warning_label.setWordWrap(True)
+        banner_layout.addWidget(self.storage_warning_label)
+        banner_actions = QHBoxLayout()
+        banner_actions.setContentsMargins(0, 0, 0, 0)
+        banner_actions.setSpacing(6)
+        self.open_storage_dir_button = QPushButton("打开目录")
+        self.open_storage_dir_button.setObjectName("openStorageDirButton")
+        self.open_storage_dir_button.clicked.connect(self._open_storage_directory)
+        self.recover_storage_button = QPushButton("备份并恢复可写")
+        self.recover_storage_button.setObjectName("recoverStorageButton")
+        self.recover_storage_button.clicked.connect(self._recover_damaged_storage)
+        banner_actions.addWidget(self.open_storage_dir_button)
+        banner_actions.addWidget(self.recover_storage_button)
+        banner_actions.addStretch(1)
+        banner_layout.addLayout(banner_actions)
+        self.storage_warning_banner.setVisible(False)
+        main_layout.addWidget(self.storage_warning_banner)
 
         list_header_layout = QHBoxLayout()
         list_header_layout.setContentsMargins(0, 0, _LIST_SCROLLBAR_WIDTH, 0)
@@ -309,6 +349,32 @@ class ModernTodoAppWindow(QMainWindow):
         self._apply_list_palette(palette)
         self._apply_combo_palette(self.filter_combo, palette)
         self._apply_combo_palette(self.sort_combo, palette)
+        if hasattr(self, "storage_warning_banner"):
+            self.storage_warning_banner.setStyleSheet(
+                f"""
+                QFrame#storageWarningBanner {{
+                    background-color: {palette.priority_high_bg};
+                    border: 1px solid {palette.due_critical};
+                    border-radius: 6px;
+                }}
+                QFrame#storageWarningBanner QLabel {{
+                    color: {palette.priority_high};
+                    font-size: 9pt;
+                    background-color: transparent;
+                }}
+                QFrame#storageWarningBanner QPushButton {{
+                    background-color: {palette.action_button_bg};
+                    color: {palette.text_primary};
+                    border: 1px solid {palette.action_button_border};
+                    border-radius: 4px;
+                    padding: 4px 8px;
+                    font-size: 9pt;
+                }}
+                QFrame#storageWarningBanner QPushButton:hover {{
+                    border-color: {palette.accent};
+                }}
+                """
+            )
         if self._empty_placeholder_label is not None:
             self._empty_placeholder_label.setStyleSheet(
                 f"color: {palette.text_secondary}; font-style: italic; font-size: 12pt; background-color: transparent;"
@@ -511,6 +577,71 @@ class ModernTodoAppWindow(QMainWindow):
         self._apply_palette(palette)
         self._refresh_item_widgets_palette(palette)
 
+    def _persist_todos(self) -> bool:
+        """统一持久化任务列表，并在真实存储处于异常态时更新顶部提示横幅。"""
+
+        saved = save_todos(self.todos)
+        if save_todos is _storage.save_todos:
+            status = get_last_save_status()
+            self._storage_status = status
+            self._sync_storage_warning_banner()
+            return bool(saved)
+        return True
+
+    def _sync_storage_warning_banner(self) -> None:
+        status = self._storage_status
+        if status is None or status.healthy:
+            self.storage_warning_banner.setVisible(False)
+            self.storage_warning_label.setText("")
+            return
+        self.storage_warning_label.setText(status.message)
+        self.recover_storage_button.setVisible(status.read_only)
+        self.storage_warning_banner.setVisible(True)
+
+    def _open_storage_directory(self) -> None:
+        target_dir = (
+            self._storage_status.data_file.parent
+            if self._storage_status is not None
+            else _storage.DATA_FILE.parent
+        )
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(target_dir)))
+
+    def _recover_damaged_storage(self) -> None:
+        status = self._storage_status
+        data_file = status.data_file if status is not None else _storage.DATA_FILE
+        reply = QMessageBox.question(
+            self,
+            "恢复可写存储",
+            (
+                f"将把损坏的 {data_file.name} 备份重命名为同目录下的隔离文件，"
+                "并把当前已恢复的任务列表重新写入主文件。\n\n是否继续？"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            quarantine_path = quarantine_damaged_main_file(self.todos)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "恢复失败", f"隔离损坏文件或写入数据失败：{exc}")
+            return
+        self._storage_status = get_last_save_status()
+        self._sync_storage_warning_banner()
+        QMessageBox.information(
+            self,
+            "已恢复可写",
+            f"损坏文件已保留为：{quarantine_path.name}\n当前待办数据已可正常保存。",
+        )
+
+    @Slot(str)
+    def _on_view_option_changed(self, _value: str) -> None:
+        if self._restoring_view_options:
+            return
+        self.settings.setValue("filterOption", self.filter_combo.currentText())
+        self.settings.setValue("sortOption", self.sort_combo.currentText())
+        self.update_list_widget()
+
     # --- 主循环刷新 ---
     def tick_update(self) -> None:
         now_utc = datetime.now(timezone.utc)
@@ -538,7 +669,7 @@ class ModernTodoAppWindow(QMainWindow):
                 changed_ids.add(original_ref["id"])
 
         if changed_ids:
-            save_todos(self.todos)
+            self._persist_todos()
             self.update_list_widget(changed_ids=changed_ids)
         self._refresh_visible_todo_timers(current_time_utc=now_utc)
         if notification_requests:
@@ -623,8 +754,6 @@ class ModernTodoAppWindow(QMainWindow):
         else:
             play_sound_effect(self.reminder_sound, REMINDER_SOUND_PATH)
 
-        if self._task_edit_dialog is None:
-            self._ensure_window_visible_for_notification()
         dialog = self._notification_dialog
         if dialog is None:
             dialog = NotificationDialog(requests, self)
@@ -632,6 +761,7 @@ class ModernTodoAppWindow(QMainWindow):
             dialog.complete_requested.connect(self._handle_notification_complete)
             dialog.snooze_requested.connect(self._handle_notification_snooze)
             dialog.ignore_requested.connect(self._handle_notification_ignore)
+            dialog.open_main_window_requested.connect(self.activate_from_external_launch)
             dialog.finished.connect(self._on_notification_dialog_finished)
         else:
             dialog.add_or_update_tasks(requests)
@@ -659,7 +789,7 @@ class ModernTodoAppWindow(QMainWindow):
 
         self._remove_notification_tasks(list(requested_ids))
         if changed_ids:
-            save_todos(self.todos)
+            self._persist_todos()
             self.update_list_widget(changed_ids=changed_ids)
 
     def _handle_notification_snooze(
@@ -675,7 +805,7 @@ class ModernTodoAppWindow(QMainWindow):
 
         self._remove_notification_tasks(list(requested_ids))
         if changed_ids:
-            save_todos(self.todos)
+            self._persist_todos()
             self.update_list_widget(changed_ids=changed_ids)
 
     def _handle_notification_ignore(self, todo_ids: list[int]) -> None:
@@ -696,7 +826,7 @@ class ModernTodoAppWindow(QMainWindow):
 
         self._remove_notification_tasks(list(requested_ids))
         if changed_ids:
-            save_todos(self.todos)
+            self._persist_todos()
             self.update_list_widget(changed_ids=changed_ids)
 
     def _remove_notification_tasks(self, todo_ids: list[int]) -> None:
@@ -718,7 +848,6 @@ class ModernTodoAppWindow(QMainWindow):
         if not self._notification_dialog.isVisible():
             self._notification_dialog.show()
         self._notification_dialog.raise_()
-        self._notification_dialog.activateWindow()
 
     def _hide_notification_dialog(self) -> None:
         if self._notification_dialog is not None:
@@ -860,7 +989,7 @@ class ModernTodoAppWindow(QMainWindow):
                     "lastNotifiedAt": None,
                 }
                 self.todos.append(new_todo)
-                save_todos(self.todos)
+                self._persist_todos()
                 self.update_list_widget(changed_ids={new_id})
 
     def _normalize_todo_id(self, raw_id: object) -> Optional[int]:
@@ -894,7 +1023,7 @@ class ModernTodoAppWindow(QMainWindow):
                         self._remove_notification_task(normalized_id)
                         break
 
-                save_todos(self.todos)
+                self._persist_todos()
                 self.update_list_widget(changed_ids={normalized_id})
 
     @Slot(object)
@@ -924,7 +1053,7 @@ class ModernTodoAppWindow(QMainWindow):
             original_len = len(self.todos)
             self.todos = [t for t in self.todos if t.get("id") != normalized_id]
             if len(self.todos) < original_len:
-                save_todos(self.todos)
+                self._persist_todos()
                 self.update_list_widget(changed_ids={normalized_id})
             else:
                 print(f"警告: 删除任务时未找到ID {normalized_id}。")
@@ -965,7 +1094,7 @@ class ModernTodoAppWindow(QMainWindow):
                 break
 
         if changed:
-            save_todos(self.todos)
+            self._persist_todos()
             self.update_list_widget(changed_ids={normalized_id})
         else:
             print(f"警告: 切换ID {normalized_id} 任务完成状态时未找到。")
@@ -1271,8 +1400,17 @@ class ModernTodoAppWindow(QMainWindow):
             self._syncing_todo_card_sizes = False
         self._refresh_visible_todo_timers()
 
+    def _empty_list_message_text(self) -> str:
+        if not self.todos:
+            return "🎉 暂无待办事项！"
+        filter_text = self.filter_combo.currentText()
+        return f"当前「{filter_text}」下暂无任务"
+
     def _show_empty_list_message(self) -> None:
+        message = self._empty_list_message_text()
         if self._empty_placeholder_item is not None:
+            if self._empty_placeholder_label is not None:
+                self._empty_placeholder_label.setText(message)
             self._update_empty_placeholder_geometry()
             return
 
@@ -1283,7 +1421,7 @@ class ModernTodoAppWindow(QMainWindow):
         container_layout.setSpacing(0)
         container_layout.addStretch()
 
-        empty_label = QLabel("🎉 暂无待办事项！")
+        empty_label = QLabel(message)
         empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         empty_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         container_layout.addWidget(empty_label, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -1319,26 +1457,42 @@ class ModernTodoAppWindow(QMainWindow):
         self._empty_placeholder_label = None
         return True
 
+    @staticmethod
+    def _parse_iso_datetime(value: object) -> Optional[datetime]:
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
     def _filter_todos(self, todos_list: List[dict]) -> List[dict]:
         filter_text = self.filter_combo.currentText()
         if filter_text == "全部":
             return todos_list
 
-        today_local = datetime.now().astimezone().date()
+        now_utc = datetime.now(timezone.utc)
+        today_local = now_utc.astimezone().date()
         filtered: List[dict] = []
         for todo in todos_list:
             add = False
+            is_completed = bool(todo.get("completed", False))
             if filter_text == "未完成":
-                add = not todo.get("completed", False)
+                add = not is_completed
             elif filter_text == "已完成":
-                add = todo.get("completed", False)
-            elif filter_text == "今天到期" and not todo.get("completed", False) and todo.get("dueDate"):
-                try:
-                    if datetime.fromisoformat(todo["dueDate"].replace("Z", "+00:00")).astimezone().date() == today_local:
-                        add = True
-                except ValueError:
-                    pass
-            elif filter_text == "高优先级" and not todo.get("completed", False) and todo.get("priority") == "高":
+                add = is_completed
+            elif filter_text == "今天到期" and not is_completed:
+                due_utc = self._parse_iso_datetime(todo.get("dueDate"))
+                if due_utc is not None and due_utc.astimezone().date() <= today_local:
+                    add = True
+            elif filter_text == "已逾期" and not is_completed:
+                due_utc = self._parse_iso_datetime(todo.get("dueDate"))
+                if due_utc is not None and due_utc <= now_utc:
+                    add = True
+            elif filter_text == "高优先级" and not is_completed and todo.get("priority") == "高":
                 add = True
             if add:
                 filtered.append(todo)
@@ -1347,47 +1501,52 @@ class ModernTodoAppWindow(QMainWindow):
     def _sort_todos(self, todos_list: List[dict]) -> List[dict]:
         sort_key = self.sort_combo.currentText()
 
-        def get_due(todo: dict, future_extreme: bool = True) -> datetime:
-            due_str = todo.get("dueDate")
-            if due_str:
-                try:
-                    return datetime.fromisoformat(due_str.replace("Z", "+00:00"))
-                except ValueError:
-                    pass
-            extreme_date = datetime.max if future_extreme else datetime.min
-            return extreme_date.replace(tzinfo=timezone.utc)
+        def get_created_ts(todo: dict) -> float:
+            created = self._parse_iso_datetime(todo.get("createdAt"))
+            return created.timestamp() if created is not None else 0.0
+
+        def get_due_ts(todo: dict) -> Optional[float]:
+            due = self._parse_iso_datetime(todo.get("dueDate"))
+            return due.timestamp() if due is not None else None
 
         priority_value = lambda p: {"高": 0, "中": 1, "低": 2}.get(p, 3)
 
         if sort_key == "创建时间 (新->旧)":
             return sorted(
                 todos_list,
-                key=lambda t: datetime.fromisoformat(t["createdAt"].replace("Z", "+00:00")),
-                reverse=True,
+                key=lambda t: (bool(t.get("completed", False)), -get_created_ts(t)),
             )
         if sort_key == "创建时间 (旧->新)":
             return sorted(
                 todos_list,
-                key=lambda t: datetime.fromisoformat(t["createdAt"].replace("Z", "+00:00")),
+                key=lambda t: (bool(t.get("completed", False)), get_created_ts(t)),
             )
         if sort_key == "截止日期 (近->远)":
             return sorted(
                 todos_list,
-                key=lambda t: (t.get("completed", False), get_due(t, True)),
+                key=lambda t: (
+                    bool(t.get("completed", False)),
+                    (due_ts := get_due_ts(t)) is None,
+                    due_ts if due_ts is not None else 0.0,
+                ),
             )
         if sort_key == "截止日期 (远->近)":
             return sorted(
                 todos_list,
-                key=lambda t: (t.get("completed", False), get_due(t, True)),
-                reverse=True,
+                key=lambda t: (
+                    bool(t.get("completed", False)),
+                    (due_ts := get_due_ts(t)) is None,
+                    -(due_ts if due_ts is not None else 0.0),
+                ),
             )
         if sort_key == "优先级 (高->低)":
             return sorted(
                 todos_list,
                 key=lambda t: (
-                    t.get("completed", False),
+                    bool(t.get("completed", False)),
                     priority_value(t.get("priority", "中")),
-                    get_due(t, True),
+                    (due_ts := get_due_ts(t)) is None,
+                    due_ts if due_ts is not None else 0.0,
                 ),
             )
         return todos_list
@@ -1440,6 +1599,19 @@ class ModernTodoAppWindow(QMainWindow):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self.toggle_window_visibility()
 
+    @Slot()
+    def activate_from_external_launch(self) -> None:
+        """从重复启动或提醒弹窗请求唤醒并前置主窗口。"""
+
+        if self._quitting_app:
+            return
+        if self.isHidden() or self.isMinimized():
+            self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self._restore_notification_dialog()
+        self._refresh_visible_todo_timers()
+
     def toggle_window_visibility(self) -> None:
         if self.isVisible() and not self.isMinimized():
             self._hide_notification_dialog()
@@ -1454,11 +1626,23 @@ class ModernTodoAppWindow(QMainWindow):
     def save_geometry_and_state(self) -> None:
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("windowState", self.saveState())
+        self.settings.setValue("filterOption", self.filter_combo.currentText())
+        self.settings.setValue("sortOption", self.sort_combo.currentText())
         self.settings.sync()
 
     def restore_geometry_and_state(self) -> None:
         geom_bytes = self.settings.value("geometry")
         state_bytes = self.settings.value("windowState")
+        saved_filter = self.settings.value("filterOption")
+        saved_sort = self.settings.value("sortOption")
+        self._restoring_view_options = True
+        try:
+            if isinstance(saved_filter, str) and self.filter_combo.findText(saved_filter) >= 0:
+                self.filter_combo.setCurrentText(saved_filter)
+            if isinstance(saved_sort, str) and self.sort_combo.findText(saved_sort) >= 0:
+                self.sort_combo.setCurrentText(saved_sort)
+        finally:
+            self._restoring_view_options = False
         screen = QApplication.primaryScreen()
         target_width, target_height = 320, 640
         if screen:
@@ -1507,11 +1691,17 @@ class ModernTodoAppWindow(QMainWindow):
                 self.showNormal()
 
     def _update_empty_placeholder_geometry(self) -> None:
-        if not self._empty_placeholder_item or not self._empty_placeholder_widget:
+        if (
+            self._quitting_app
+            or not self._empty_placeholder_item
+            or not self._empty_placeholder_widget
+        ):
             return
-
-        viewport = self.list_widget.viewport() if self.list_widget else None
-        viewport_size = viewport.size() if viewport else self.list_widget.size()
+        try:
+            viewport = self.list_widget.viewport() if self.list_widget else None
+            viewport_size = viewport.size() if viewport else self.list_widget.size()
+        except RuntimeError:
+            return
         width = max(viewport_size.width() - 10, 200)
         vertical_spacing = self.list_widget.spacing() * 2
         height = max(viewport_size.height() - vertical_spacing, 160)

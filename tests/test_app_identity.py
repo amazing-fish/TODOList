@@ -27,7 +27,7 @@ class ApplicationIdentityTest(unittest.TestCase):
 
     def test_visible_identity_targets_v2_without_changing_settings_namespace(self) -> None:
         self.assertEqual(APP_NAME, "桌面待办事项")
-        self.assertEqual(APP_VERSION, "2.1.8")
+        self.assertEqual(APP_VERSION, "2.2.0")
         self.assertNotIn("v1", APP_NAME)
         self.assertEqual(SETTINGS_ORGANIZATION, "MyProductiveApp")
         self.assertEqual(SETTINGS_APPLICATION, "桌面待办事项 v1")
@@ -40,10 +40,14 @@ class ApplicationIdentityTest(unittest.TestCase):
         fake_window = MagicMock()
         app_class = MagicMock()
         app_class.instance.return_value = fake_app
+        fake_guard = MagicMock()
+        fake_guard.try_acquire.return_value = True
 
         with (
             patch.object(app_module, "QApplication", app_class),
             patch.object(app_module, "apply_application_font"),
+            patch.object(app_module, "configure_logging"),
+            patch.object(app_module, "SingleInstanceGuard", return_value=fake_guard),
             patch.object(app_module, "get_icon"),
             patch.object(app_module, "ModernTodoAppWindow", return_value=fake_window),
             self.assertRaises(SystemExit),
@@ -53,12 +57,17 @@ class ApplicationIdentityTest(unittest.TestCase):
         fake_app.setApplicationName.assert_called_once_with(APP_NAME)
         fake_app.setApplicationVersion.assert_called_once_with(APP_VERSION)
         fake_app.setOrganizationName.assert_called_once_with(SETTINGS_ORGANIZATION)
+        fake_guard.release.assert_called_once()
 
     def test_main_window_reads_legacy_settings_and_shows_current_identity(self) -> None:
         legacy_geometry = QByteArray(b"legacy-geometry")
         legacy_window_state = QByteArray(b"legacy-window-state")
+        legacy_store = {
+            "geometry": legacy_geometry,
+            "windowState": legacy_window_state,
+        }
         settings = MagicMock()
-        settings.value.side_effect = [legacy_geometry, legacy_window_state]
+        settings.value.side_effect = lambda key, default=None: legacy_store.get(key, default)
 
         with (
             patch("todo_app.main_window.load_todos", return_value=[]),
@@ -88,10 +97,14 @@ class ApplicationIdentityTest(unittest.TestCase):
             [
                 call("geometry"),
                 call("windowState"),
+                call("filterOption"),
+                call("sortOption"),
             ],
         )
         restore_geometry.assert_called_once_with(legacy_geometry)
         restore_state.assert_called_once_with(legacy_window_state)
+        self.assertEqual(window.filter_combo.currentText(), "全部")
+        self.assertEqual(window.sort_combo.currentText(), "创建时间 (新->旧)")
         self.assertEqual(window.windowTitle(), f"{APP_NAME} - v{APP_VERSION}")
         self.assertEqual(window.tray_icon.toolTip(), APP_NAME)
 

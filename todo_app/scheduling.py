@@ -65,10 +65,8 @@ def build_snooze_update_fields(
             updated_fields["dueDate"] = snooze_until_dt.isoformat()
         return updated_fields
 
-    shifted_due_dt = due_date_dt + snooze_duration
-    if shifted_due_dt < snooze_until_dt:
-        shifted_due_dt = snooze_until_dt
-    updated_fields["dueDate"] = shifted_due_dt.isoformat()
+    if due_date_dt <= snooze_until_dt:
+        updated_fields["dueDate"] = snooze_until_dt.isoformat()
     return updated_fields
 
 

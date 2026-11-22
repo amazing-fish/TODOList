@@ -44,11 +44,14 @@ class NotificationDialog(QDialog):
     complete_requested = Signal(list)
     snooze_requested = Signal(list, object)
     ignore_requested = Signal(list)
+    open_main_window_requested = Signal()
 
     def __init__(self, requests: list[tuple[dict, bool]], parent=None):
         super().__init__(parent)
         self._task_rows: dict[int, dict[str, object]] = {}
         self._positioned = False
+        self._screen_signals_connected = False
+        self._connected_screens: list[object] = []
         self._theme_manager = get_theme_manager()
         self._palette: ThemeColors = self._theme_manager.current_palette
         self._theme_manager.theme_changed.connect(self._on_theme_changed)
@@ -65,14 +68,29 @@ class NotificationDialog(QDialog):
         self.setWindowIcon(get_icon(APP_ICON_PATH, "🔔"))
         self.setMinimumWidth(460)
         self.setModal(False)
+        self.setWindowFlags(
+            Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint
+        )
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(15)
         layout.setContentsMargins(20, 20, 20, 20)
 
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(8)
         self.title_label = QLabel()
-        layout.addWidget(self.title_label)
+        header_layout.addWidget(self.title_label, 1)
+
+        self.open_main_button = QPushButton("打开主窗口")
+        self.open_main_button.setObjectName("notificationOpenMainButton")
+        self.open_main_button.setProperty("notificationRowAction", True)
+        self.open_main_button.setToolTip("显示并前置待办列表主窗口")
+        self.open_main_button.clicked.connect(self.open_main_window_requested.emit)
+        header_layout.addWidget(self.open_main_button)
+        layout.addLayout(header_layout)
 
         self.tasks_container = QWidget()
         self.tasks_layout = QVBoxLayout(self.tasks_container)
@@ -253,7 +271,11 @@ class NotificationDialog(QDialog):
         self.title_label.setText(f"{len(self._task_rows)} 个任务需要处理")
 
     def _adjust_size(self) -> None:
-        visible_rows_height = min(320, max(80, len(self._task_rows) * 72))
+        self.tasks_layout.activate()
+        self.tasks_container.adjustSize()
+        content_height = self.tasks_container.sizeHint().height()
+        estimated_height = len(self._task_rows) * 72
+        visible_rows_height = min(320, max(80, content_height, estimated_height))
         self.tasks_scroll.setFixedHeight(visible_rows_height)
         self.adjustSize()
         if self._positioned:
@@ -268,6 +290,7 @@ class NotificationDialog(QDialog):
             app = QGuiApplication.instance()
             app.screenAdded.connect(self._watch_screen_geometry)
             app.screenRemoved.connect(self._ensure_on_screen)
+            self._screen_signals_connected = True
             for screen in app.screens():
                 self._watch_screen_geometry(screen)
             screen = self.screen()
@@ -282,7 +305,34 @@ class NotificationDialog(QDialog):
         self._ensure_on_screen()
 
     def _watch_screen_geometry(self, screen) -> None:
-        screen.availableGeometryChanged.connect(self._ensure_on_screen)
+        if screen not in self._connected_screens:
+            screen.availableGeometryChanged.connect(self._ensure_on_screen)
+            self._connected_screens.append(screen)
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self._disconnect_screen_signals()
+        super().closeEvent(event)
+
+    def _disconnect_screen_signals(self) -> None:
+        if not self._screen_signals_connected:
+            return
+        self._screen_signals_connected = False
+        app = QGuiApplication.instance()
+        if app is not None:
+            for sig, slot in (
+                (app.screenAdded, self._watch_screen_geometry),
+                (app.screenRemoved, self._ensure_on_screen),
+            ):
+                try:
+                    sig.disconnect(slot)
+                except (RuntimeError, TypeError):
+                    pass
+        for screen in self._connected_screens:
+            try:
+                screen.availableGeometryChanged.disconnect(self._ensure_on_screen)
+            except (RuntimeError, TypeError):
+                pass
+        self._connected_screens.clear()
 
     def _ensure_on_screen(self) -> None:
         # 使用提醒自身所在屏幕，避免拖到副屏后被主窗口的屏幕位置拉回。
@@ -336,6 +386,15 @@ class NotificationDialog(QDialog):
             }}
             QPushButton:disabled, QToolButton:disabled {{
                 background-color: {palette.card_border}; color: {palette.text_secondary};
+            }}
+            QPushButton#notificationOpenMainButton {{
+                background-color: {palette.action_button_bg};
+                color: {palette.text_primary};
+                border: 1px solid {palette.action_button_border};
+            }}
+            QPushButton#notificationOpenMainButton:hover {{
+                border-color: {palette.accent};
+                background-color: {palette.action_edit_hover_bg};
             }}
             QPushButton[notificationRowAction="true"],
             QToolButton[notificationRowAction="true"] {{

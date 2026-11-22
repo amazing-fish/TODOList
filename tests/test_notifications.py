@@ -209,6 +209,19 @@ class NotificationDialogTest(unittest.TestCase):
             dialog.tasks_scroll.minimumHeight(), dialog.tasks_scroll.maximumHeight()
         )
 
+    def test_dialog_sets_non_activating_topmost_and_open_main_button(self) -> None:
+        dialog = NotificationDialog([(make_todo(1, "非抢焦提醒"), True)])
+        self.addCleanup(dialog.close)
+
+        self.assertTrue(dialog.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating))
+        self.assertTrue(bool(dialog.windowFlags() & Qt.WindowType.WindowStaysOnTopHint))
+        requested: list[bool] = []
+        dialog.open_main_window_requested.connect(lambda: requested.append(True))
+        open_btn = dialog.findChild(QPushButton, "notificationOpenMainButton")
+        self.assertIsNotNone(open_btn)
+        open_btn.click()
+        self.assertEqual(requested, [True])
+
 
 class FakeSignal:
     def __init__(self) -> None:
@@ -231,6 +244,7 @@ class FakeNotificationDialog:
         self.complete_requested = FakeSignal()
         self.snooze_requested = FakeSignal()
         self.ignore_requested = FakeSignal()
+        self.open_main_window_requested = FakeSignal()
         self.finished = FakeSignal()
         if isinstance(requests, list):
             self.add_or_update_tasks(requests)
@@ -282,6 +296,13 @@ class NotificationBatchIntegrationTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self) -> None:
+        fake_settings = MagicMock()
+        fake_settings.value.return_value = None
+        settings_patcher = patch("todo_app.main_window.QSettings", return_value=fake_settings)
+        settings_patcher.start()
+        self.addCleanup(settings_patcher.stop)
 
     def test_due_tasks_share_one_non_modal_in_app_window(self) -> None:
         now = datetime.now(timezone.utc)

@@ -42,17 +42,30 @@ class SchedulingRulesTest(unittest.TestCase):
         self.assertFalse(updated["notifiedForReminder"])
         self.assertFalse(updated["notifiedForDue"])
 
-    def test_snooze_future_task_extends_due_date_by_duration(self) -> None:
+    def test_snooze_future_task_within_due_keeps_original_due_date(self) -> None:
         now = datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc)
-        todo = {
-            "dueDate": datetime(2026, 5, 10, 13, 0, tzinfo=timezone.utc).isoformat(),
-        }
+        original_due = datetime(2026, 5, 10, 13, 0, tzinfo=timezone.utc).isoformat()
+        todo = {"dueDate": original_due}
 
         updated = build_snooze_update_fields(todo, timedelta(minutes=15), now)
 
+        self.assertNotIn("dueDate", updated)
+        self.assertEqual(
+            updated["snoozeUntil"],
+            datetime(2026, 5, 10, 12, 15, tzinfo=timezone.utc).isoformat(),
+        )
+
+    def test_snooze_future_task_beyond_due_pushes_due_date_to_snooze_target(self) -> None:
+        now = datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc)
+        todo = {
+            "dueDate": datetime(2026, 5, 10, 12, 30, tzinfo=timezone.utc).isoformat(),
+        }
+
+        updated = build_snooze_update_fields(todo, timedelta(hours=1), now)
+
         self.assertEqual(
             updated["dueDate"],
-            datetime(2026, 5, 10, 13, 15, tzinfo=timezone.utc).isoformat(),
+            datetime(2026, 5, 10, 13, 0, tzinfo=timezone.utc).isoformat(),
         )
 
     def test_text_only_edit_preserves_existing_snooze_state(self) -> None:
