@@ -302,6 +302,33 @@ class SettingsAndWindowWorkflowTests(unittest.TestCase):
                 preserved = next(t for t in window.todos if t["id"] == 2)
                 self.assertTrue(preserved["notifiedForDue"])
 
+            # 校验 reminderOffset=null 与非字符串 snoozeUntil 被拒绝，且无时区 dueDate 自动归一化为 UTC
+            null_offset = Path(tmp_dir) / "null_offset.json"
+            null_offset.write_text(
+                json.dumps([{"id": 10, "text": "x", "reminderOffset": None}]),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                window.import_todos_from_file(null_offset)
+
+            bad_snooze = Path(tmp_dir) / "bad_snooze.json"
+            bad_snooze.write_text(
+                json.dumps([{"id": 11, "text": "y", "snoozeUntil": 12345}]),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                window.import_todos_from_file(bad_snooze)
+
+            naive_due = Path(tmp_dir) / "naive_due.json"
+            naive_due.write_text(
+                json.dumps([{"id": 12, "text": "带无时区时间", "dueDate": "2026-11-22T09:00:00", "reminderOffset": 0}]),
+                encoding="utf-8",
+            )
+            with patch.object(window, "_persist_todos", return_value=True):
+                self.assertEqual(window.import_todos_from_file(naive_due), 1)
+                imported_item = next(t for t in window.todos if t["text"] == "带无时区时间")
+                self.assertEqual(imported_item["dueDate"], "2026-11-22T09:00:00+00:00")
+
     def test_dnd_expiration_updates_open_settings_dialog_and_prompts_flush_undo(self) -> None:
         window = self._create_window(
             [

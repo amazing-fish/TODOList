@@ -277,6 +277,7 @@ jobs:
     concurrency:
       group: build-exe-release-publish
       cancel-in-progress: false
+      queue: max
 
     steps:
       - name: 检出仓库引用

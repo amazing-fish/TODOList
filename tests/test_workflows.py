@@ -62,6 +62,7 @@ class BuildWorkflowGovernanceTests(unittest.TestCase):
         self.assertIn("build-exe-main-preview-build", self.build_workflow)
         self.assertIn("build-exe-release-publish", self.build_workflow)
         self.assertIn("cancel-in-progress: false", self.build_workflow)
+        self.assertIn("queue: max", self.build_workflow)
         self.assertIn("persist-credentials: false", self.build_workflow)
         self.assertIn("refs/tags/{0}", self.build_workflow)
         self.assertIn("git rev-parse HEAD", self.build_workflow)

@@ -302,6 +302,54 @@ class RecurrenceGuiTests(unittest.TestCase):
             window.undo_toast_bar.trigger_undo()
             self.assertEqual(window.todos[0]["dueDate"], snoozed_due)
 
+            # 3. 通知完成在持久化失败时全部回滚，既不清除通知也不触发 Undo
+            window.undo_toast_bar.dismiss()
+            with (
+                patch.object(window, "_persist_todos", return_value=False),
+                patch.object(window, "_remove_notification_tasks") as rm_mock,
+                patch("todo_app.main_window.QMessageBox.warning") as warn_mock,
+            ):
+                window._handle_notification_complete([88])
+                self.assertEqual(window.todos[0]["dueDate"], snoozed_due)
+                rm_mock.assert_not_called()
+                self.assertFalse(window.undo_toast_bar.has_active_undo())
+                warn_mock.assert_called_once()
+
+    def test_dst_gap_preserves_original_wall_clock_anchor(self) -> None:
+        from datetime import date as _date, timedelta
+
+        class _SpringGapDatetime(datetime):
+            def astimezone(self, tz=None):
+                if tz is not None:
+                    return super().astimezone(tz)
+                if self.tzinfo is not None:
+                    # UTC -> UTC-5（3 月 7 日 07:30 UTC 为 02:30-05:00）
+                    return (self - timedelta(hours=5)).replace(tzinfo=timezone(timedelta(hours=-5)))
+                # 无时区墙钟：3 月 8 日 02:30 不存在时回退解析为 03:30-04:00；3 月 9 日还原 02:30-04:00
+                if self.date() == _date(2026, 3, 8) and self.hour == 2 and self.minute == 30:
+                    return datetime(2026, 3, 8, 3, 30, tzinfo=timezone(timedelta(hours=-4)))
+                offset = -5 if self.date() <= _date(2026, 3, 7) else -4
+                return datetime(
+                    self.year,
+                    self.month,
+                    self.day,
+                    self.hour,
+                    self.minute,
+                    self.second,
+                    self.microsecond,
+                    tzinfo=timezone(timedelta(hours=offset)),
+                )
+
+        # 原规则为每日 02:30，跨越 3 月 8 日跳变缺口后在 3 月 9 日仍应维持 02:30-04:00（06:30 UTC）
+        with patch("todo_app.scheduling.datetime", _SpringGapDatetime):
+            next_iso = calculate_next_due_utc(
+                "2026-03-07T07:30:00+00:00",
+                {"frequency": "daily", "interval": 1, "skipWeekends": False},
+                reference_utc=_SpringGapDatetime(2026, 3, 8, 8, 0, tzinfo=timezone.utc),
+                target_tz=None,
+            )
+        self.assertEqual(next_iso, "2026-03-09T06:30:00+00:00")
+
 
 if __name__ == "__main__":
     unittest.main()
