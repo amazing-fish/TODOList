@@ -1,6 +1,7 @@
 """主窗口实现。"""
 from __future__ import annotations
 
+import copy
 import sys
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -19,7 +20,16 @@ from PySide6.QtCore import (
     QSize,
     Slot,
 )
-from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import (
+    QColor,
+    QDesktopServices,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPen,
+    QPixmap,
+    QShortcut,
+)
 from PySide6.QtMultimedia import QSoundEffect
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -29,6 +39,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -68,7 +79,7 @@ from .storage import (
     save_todos,
 )
 from .utils import get_icon, play_sound_effect
-from .widgets import TodoItemWidget
+from .widgets import TodoItemWidget, UndoToastBar
 from .theme import ThemeColors, get_theme_manager
 
 
@@ -206,15 +217,18 @@ class ModernTodoAppWindow(QMainWindow):
         self.due_sound.setVolume(0.8)
 
         self._task_edit_dialog: Optional[TaskEditDialog] = None
+        self._always_on_top = False
         self._empty_placeholder_item: Optional[QListWidgetItem] = None
         self._empty_placeholder_widget: Optional[QWidget] = None
         self._empty_placeholder_label: Optional[QLabel] = None
+        self._empty_reset_button: Optional[QPushButton] = None
         self._todo_items_by_id: dict[int, QListWidgetItem] = {}
         self._todo_widgets_by_id: dict[int, TodoItemWidget] = {}
         self._reconciling_todo_list = False
         self._syncing_todo_card_sizes = False
 
         self._build_ui()
+        self._bind_shortcuts()
         self._create_tray_icon()
         self.restore_geometry_and_state()
         self.update_list_widget()
@@ -267,11 +281,54 @@ class ModernTodoAppWindow(QMainWindow):
         controls_layout.addStretch(1)
 
         self.add_button = QPushButton()
-        self.add_button.setToolTip("添加新任务")
+        self.add_button.setToolTip("完整新建任务 (Ctrl+Shift+N)")
         self.add_button.setFixedSize(36, 36)
         self.add_button.setIconSize(QSize(18, 18))
         self.add_button.setAccessibleName("添加任务")
-        self.add_button.clicked.connect(self.show_add_task_dialog)
+        self.add_button.clicked.connect(lambda _checked=False: self.show_add_task_dialog())
+
+        self.pin_button = QPushButton("置顶")
+        self.pin_button.setObjectName("pinWindowButton")
+        self.pin_button.setCheckable(True)
+        self.pin_button.setToolTip("切换窗口始终置顶")
+        self.pin_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.pin_button.toggled.connect(self._on_pin_toggled)
+
+        list_header_layout = QHBoxLayout()
+        list_header_layout.setContentsMargins(0, 0, _LIST_SCROLLBAR_WIDTH, 0)
+        list_header_layout.setSpacing(8)
+        self.list_label = QLabel("待办列表")
+        self.status_summary_label = QLabel()
+        self.status_summary_label.setObjectName("statusSummaryLabel")
+        list_header_layout.addWidget(self.list_label)
+        list_header_layout.addWidget(self.status_summary_label)
+        list_header_layout.addStretch(1)
+        list_header_layout.addWidget(self.pin_button)
+        list_header_layout.addWidget(self.add_button)
+        main_layout.addLayout(list_header_layout)
+
+        quick_add_layout = QHBoxLayout()
+        quick_add_layout.setContentsMargins(0, 0, _LIST_SCROLLBAR_WIDTH, 0)
+        quick_add_layout.setSpacing(6)
+        self.quick_add_input = QLineEdit()
+        self.quick_add_input.setObjectName("quickAddInput")
+        self.quick_add_input.setPlaceholderText("快速添加待办… Enter 直建 / Shift+Enter 详情")
+        self.quick_add_input.installEventFilter(self)
+        quick_add_layout.addWidget(self.quick_add_input, 1)
+        main_layout.addLayout(quick_add_layout)
+
+        search_layout = QHBoxLayout()
+        search_layout.setContentsMargins(0, 0, _LIST_SCROLLBAR_WIDTH, 0)
+        search_layout.setSpacing(6)
+        self.search_input = QLineEdit()
+        self.search_input.setObjectName("searchInput")
+        self.search_input.setPlaceholderText("搜索待办内容… (Ctrl+F)")
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.textChanged.connect(self._on_search_text_changed)
+        self.search_input.installEventFilter(self)
+        search_layout.addWidget(self.search_input, 1)
+        main_layout.addLayout(search_layout)
+
         main_layout.addLayout(controls_layout)
 
         self.storage_warning_banner = QFrame()
@@ -298,14 +355,6 @@ class ModernTodoAppWindow(QMainWindow):
         self.storage_warning_banner.setVisible(False)
         main_layout.addWidget(self.storage_warning_banner)
 
-        list_header_layout = QHBoxLayout()
-        list_header_layout.setContentsMargins(0, 0, _LIST_SCROLLBAR_WIDTH, 0)
-        self.list_label = QLabel("待办列表")
-        list_header_layout.addWidget(self.list_label)
-        list_header_layout.addStretch(1)
-        list_header_layout.addWidget(self.add_button)
-        main_layout.addLayout(list_header_layout)
-
         self.list_widget = SmoothScrollListWidget()
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         # QListView::spacing 会填充每个 item 四周，相邻卡片间距因此是该值的两倍。
@@ -319,7 +368,26 @@ class ModernTodoAppWindow(QMainWindow):
         self.list_widget.viewport().installEventFilter(self)
         self._sync_list_scrollbar_gutter()
         main_layout.addWidget(self.list_widget, 1)
+
+        self.undo_toast_bar = UndoToastBar(self, palette=self._palette)
+        main_layout.addWidget(self.undo_toast_bar)
         self._apply_palette(self._palette)
+
+    def _bind_shortcuts(self) -> None:
+        self._shortcut_quick_add = QShortcut(QKeySequence("Ctrl+N"), self)
+        self._shortcut_quick_add.activated.connect(self._focus_quick_add)
+        self._shortcut_full_add = QShortcut(QKeySequence("Ctrl+Shift+N"), self)
+        self._shortcut_full_add.activated.connect(
+            lambda: self.show_add_task_dialog(initial_text=self.quick_add_input.text().strip())
+        )
+        self._shortcut_search = QShortcut(QKeySequence("Ctrl+F"), self)
+        self._shortcut_search.activated.connect(self._focus_search_input)
+        self._shortcut_escape = QShortcut(QKeySequence("Esc"), self)
+        self._shortcut_escape.activated.connect(self._handle_escape_shortcut)
+        self._shortcut_undo = QShortcut(QKeySequence("Ctrl+Z"), self)
+        self._shortcut_undo.activated.connect(self._handle_undo_shortcut)
+        self._shortcut_delete = QShortcut(QKeySequence("Delete"), self)
+        self._shortcut_delete.activated.connect(self._handle_delete_shortcut)
 
     def _apply_palette(self, palette: ThemeColors) -> None:
         """根据主题配色刷新窗口视觉样式。"""
@@ -338,8 +406,52 @@ class ModernTodoAppWindow(QMainWindow):
              """
         )
         self.list_label.setStyleSheet(
-            f"font-size: 13pt; font-weight:bold; color: {palette.list_label}; margin-top: 8px; margin-bottom: 3px;"
+            f"font-size: 13pt; font-weight:bold; color: {palette.list_label}; margin-top: 2px; margin-bottom: 2px;"
         )
+        if hasattr(self, "status_summary_label"):
+            self.status_summary_label.setStyleSheet(
+                f"font-size: 9pt; color: {palette.text_secondary}; background-color: transparent;"
+            )
+        if hasattr(self, "pin_button"):
+            self.pin_button.setStyleSheet(
+                f"""
+                QPushButton#pinWindowButton {{
+                    background-color: {palette.action_button_bg};
+                    color: {palette.text_primary};
+                    border: 1px solid {palette.action_button_border};
+                    border-radius: 5px;
+                    padding: 4px 8px;
+                    font-size: 9pt;
+                }}
+                QPushButton#pinWindowButton:hover {{
+                    border-color: {palette.accent};
+                }}
+                QPushButton#pinWindowButton:checked {{
+                    background-color: {palette.accent};
+                    color: {palette.inverse_text};
+                    border-color: {palette.accent};
+                }}
+                """
+            )
+        line_edit_style = f"""
+            QLineEdit {{
+                background-color: {palette.input_background};
+                color: {palette.text_primary};
+                border: 1px solid {palette.input_border};
+                border-radius: 5px;
+                padding: 5px 8px;
+                font-size: 9.5pt;
+            }}
+            QLineEdit:focus {{
+                border: 1.5px solid {palette.accent};
+            }}
+        """
+        if hasattr(self, "quick_add_input"):
+            self.quick_add_input.setStyleSheet(line_edit_style)
+        if hasattr(self, "search_input"):
+            self.search_input.setStyleSheet(line_edit_style)
+        if hasattr(self, "undo_toast_bar"):
+            self.undo_toast_bar.apply_palette(palette)
         self.filter_label.setStyleSheet(
             f"color: {palette.text_primary}; font-size: 10pt; background-color: transparent;"
         )
@@ -377,7 +489,24 @@ class ModernTodoAppWindow(QMainWindow):
             )
         if self._empty_placeholder_label is not None:
             self._empty_placeholder_label.setStyleSheet(
-                f"color: {palette.text_secondary}; font-style: italic; font-size: 12pt; background-color: transparent;"
+                f"color: {palette.text_secondary}; font-style: italic; font-size: 11.5pt; background-color: transparent;"
+            )
+        if self._empty_reset_button is not None:
+            self._empty_reset_button.setStyleSheet(
+                f"""
+                QPushButton#resetFilterButton {{
+                    background-color: {palette.action_button_bg};
+                    color: {palette.accent};
+                    border: 1px solid {palette.accent};
+                    border-radius: 5px;
+                    padding: 6px 12px;
+                    font-size: 9.5pt;
+                }}
+                QPushButton#resetFilterButton:hover {{
+                    background-color: {palette.accent};
+                    color: {palette.inverse_text};
+                }}
+                """
             )
 
     def _apply_list_palette(self, palette: ThemeColors) -> None:
@@ -761,6 +890,8 @@ class ModernTodoAppWindow(QMainWindow):
             dialog.complete_requested.connect(self._handle_notification_complete)
             dialog.snooze_requested.connect(self._handle_notification_snooze)
             dialog.ignore_requested.connect(self._handle_notification_ignore)
+            dialog.acknowledge_requested.connect(self._handle_notification_acknowledge)
+            dialog.edit_requested.connect(self._handle_notification_edit)
             dialog.open_main_window_requested.connect(self.activate_from_external_launch)
             dialog.finished.connect(self._on_notification_dialog_finished)
         else:
@@ -810,9 +941,11 @@ class ModernTodoAppWindow(QMainWindow):
 
     def _handle_notification_ignore(self, todo_ids: list[int]) -> None:
         requested_ids = {int(todo_id) for todo_id in todo_ids}
+        snapshots: dict[int, dict[str, object]] = {}
         changed_ids: set[int] = set()
         for todo in self.todos:
-            if todo.get("id") not in requested_ids:
+            tid = todo.get("id")
+            if tid not in requested_ids:
                 continue
             updated_fields = {
                 "dueDate": None,
@@ -821,13 +954,53 @@ class ModernTodoAppWindow(QMainWindow):
                 "notifiedForDue": False,
             }
             if any(todo.get(key) != value for key, value in updated_fields.items()):
+                snapshots[int(tid)] = {
+                    "dueDate": todo.get("dueDate"),
+                    "snoozeUntil": todo.get("snoozeUntil"),
+                    "notifiedForReminder": bool(todo.get("notifiedForReminder", False)),
+                    "notifiedForDue": bool(todo.get("notifiedForDue", False)),
+                }
                 todo.update(updated_fields)
-                changed_ids.add(todo["id"])
+                changed_ids.add(int(tid))
 
         self._remove_notification_tasks(list(requested_ids))
         if changed_ids:
             self._persist_todos()
             self.update_list_widget(changed_ids=changed_ids)
+            if hasattr(self, "undo_toast_bar"):
+                def _undo_clear_due() -> None:
+                    restored_ids: set[int] = set()
+                    for item in self.todos:
+                        tid = item.get("id")
+                        if isinstance(tid, int) and tid in snapshots:
+                            item.update(snapshots[tid])
+                            restored_ids.add(tid)
+                    if restored_ids:
+                        self._persist_todos()
+                        self.update_list_widget(changed_ids=restored_ids)
+
+                self.undo_toast_bar.show_toast("已清除任务截止时间", _undo_clear_due)
+
+    def _handle_notification_acknowledge(self, todo_ids: object) -> None:
+        if isinstance(todo_ids, int):
+            target_ids = [todo_ids]
+        elif isinstance(todo_ids, (list, tuple, set)):
+            target_ids = [int(tid) for tid in todo_ids]
+        else:
+            return
+        self._remove_notification_tasks(target_ids)
+
+    @Slot(object)
+    def _handle_notification_edit(self, todo_id: object) -> None:
+        self.activate_from_external_launch()
+        self.handle_edit_request(todo_id)
+
+    @Slot(object, object)
+    def _handle_card_quick_snooze(self, todo_id: object, snooze_duration: object) -> None:
+        normalized_id = self._normalize_todo_id(todo_id)
+        if normalized_id is None or not isinstance(snooze_duration, timedelta):
+            return
+        self._handle_notification_snooze([normalized_id], snooze_duration)
 
     def _remove_notification_tasks(self, todo_ids: list[int]) -> None:
         if self._notification_dialog is not None:
@@ -925,11 +1098,129 @@ class ModernTodoAppWindow(QMainWindow):
         self._on_top_restore_timer.start(1000)
 
     def _restore_window_stays_on_top_flag(self) -> None:
+        if getattr(self, "_always_on_top", False):
+            return
         if not self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint:
             return
 
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
         self.show()
+
+    @Slot(bool)
+    def _on_pin_toggled(self, checked: bool) -> None:
+        self._apply_pin_state(checked, persist=True)
+
+    def _apply_pin_state(self, pinned: bool, *, persist: bool = True) -> None:
+        pinned_bool = bool(pinned)
+        self._always_on_top = pinned_bool
+        if hasattr(self, "pin_button") and self.pin_button.isChecked() != pinned_bool:
+            self.pin_button.blockSignals(True)
+            self.pin_button.setChecked(pinned_bool)
+            self.pin_button.blockSignals(False)
+        currently_pinned = bool(self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
+        if currently_pinned != pinned_bool:
+            was_visible = self.isVisible()
+            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, pinned_bool)
+            if was_visible:
+                self.show()
+        if persist:
+            self.settings.setValue("windowAlwaysOnTop", pinned_bool)
+
+    def _next_todo_id(self) -> int:
+        current_ids = [t["id"] for t in self.todos if isinstance(t.get("id"), int)]
+        max_id = max(current_ids) if current_ids else 0
+        new_id_time = int(datetime.now(timezone.utc).timestamp() * 1000)
+        new_id = max(new_id_time, max_id + 1)
+        existing_ids = set(current_ids)
+        while new_id in existing_ids:
+            new_id += 1
+        return new_id
+
+    def _is_storage_read_only(self) -> bool:
+        return self._storage_status is not None and bool(self._storage_status.read_only)
+
+    def _submit_quick_add(self, *, open_full_dialog: bool = False) -> None:
+        text = self.quick_add_input.text().strip()
+        if open_full_dialog:
+            if self.show_add_task_dialog(initial_text=text):
+                self.quick_add_input.clear()
+            return
+        if not text:
+            return
+        if self._is_storage_read_only():
+            self._sync_storage_warning_banner()
+            QMessageBox.warning(
+                self,
+                "只读恢复模式",
+                "主数据文件当前处于损坏保护状态，请先在顶部警告横幅中备份并恢复可写，再添加任务。",
+            )
+            return
+        new_id = self._next_todo_id()
+        new_todo = {
+            "id": new_id,
+            "text": text,
+            "priority": "中",
+            "dueDate": None,
+            "reminderOffset": -1,
+            "completed": False,
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+            "snoozeUntil": None,
+            "notifiedForReminder": False,
+            "notifiedForDue": False,
+            "lastNotifiedAt": None,
+        }
+        self.todos.append(new_todo)
+        self._persist_todos()
+        self.update_list_widget(changed_ids={new_id})
+        self.quick_add_input.clear()
+
+    def _focus_quick_add(self) -> None:
+        self.quick_add_input.setFocus()
+        self.quick_add_input.selectAll()
+
+    def _focus_search_input(self) -> None:
+        self.search_input.setFocus()
+        self.search_input.selectAll()
+
+    def _handle_escape_shortcut(self) -> None:
+        if self.search_input.text():
+            self.search_input.clear()
+        if self.search_input.hasFocus():
+            self.search_input.clearFocus()
+        elif hasattr(self, "undo_toast_bar") and self.undo_toast_bar.isVisible():
+            self.undo_toast_bar.dismiss()
+
+    def _handle_undo_shortcut(self) -> None:
+        focus_widget = QApplication.focusWidget()
+        if isinstance(focus_widget, QLineEdit) and focus_widget.text():
+            return
+        if hasattr(self, "undo_toast_bar") and self.undo_toast_bar.has_active_undo():
+            self.undo_toast_bar.trigger_undo()
+
+    def _handle_delete_shortcut(self) -> None:
+        focus_widget = QApplication.focusWidget()
+        if isinstance(focus_widget, QLineEdit):
+            return
+        current_item = self.list_widget.currentItem()
+        if current_item is None:
+            return
+        widget = self.list_widget.itemWidget(current_item)
+        if isinstance(widget, TodoItemWidget) and "id" in widget.todo_item:
+            self.handle_delete_request(widget.todo_item["id"])
+
+    @Slot(str)
+    def _on_search_text_changed(self, _text: str) -> None:
+        self.update_list_widget()
+
+    def reset_filters_and_search(self) -> None:
+        self._restoring_view_options = True
+        try:
+            self.filter_combo.setCurrentText("全部")
+            self.search_input.clear()
+            self.settings.setValue("filterOption", self.filter_combo.currentText())
+        finally:
+            self._restoring_view_options = False
+        self.update_list_widget()
 
     # --- 任务操作 ---
     def _activate_task_editor(self) -> bool:
@@ -944,11 +1235,16 @@ class ModernTodoAppWindow(QMainWindow):
         return True
 
     @contextmanager
-    def _task_editor_session(self, todo_item: Optional[dict] = None) -> Iterator[TaskEditDialog]:
+    def _task_editor_session(
+        self,
+        todo_item: Optional[dict] = None,
+        *,
+        initial_text: str = "",
+    ) -> Iterator[TaskEditDialog]:
         # 编辑持有模态输入期间，提醒仅累积数据；保存/取消后再恢复同一批次。
         self._on_top_restore_timer.stop()
         self._restore_window_stays_on_top_flag()
-        dialog = TaskEditDialog(todo_item=todo_item, parent=self)
+        dialog = TaskEditDialog(todo_item=todo_item, parent=self, initial_text=initial_text)
         self._task_edit_dialog = dialog
         self._hide_notification_dialog()
         try:
@@ -960,20 +1256,15 @@ class ModernTodoAppWindow(QMainWindow):
             if self.isVisible() and not self.isMinimized():
                 self._restore_notification_dialog()
 
-    def show_add_task_dialog(self) -> None:
+    def show_add_task_dialog(self, initial_text: str = "") -> bool:
         if self._activate_task_editor():
-            return
-        with self._task_editor_session() as dialog:
+            return False
+        accepted = False
+        with self._task_editor_session(initial_text=initial_text) as dialog:
             if dialog.exec() == QDialog.DialogCode.Accepted:
+                accepted = True
                 new_data = dialog.get_task_data()
-
-                current_ids = [t["id"] for t in self.todos if isinstance(t.get("id"), int)]
-                max_id = max(current_ids) if current_ids else 0
-                new_id_time = int(datetime.now(timezone.utc).timestamp() * 1000)
-                new_id = max(new_id_time, max_id + 1)
-                existing_ids = set(current_ids)
-                while new_id in existing_ids:
-                    new_id += 1
+                new_id = self._next_todo_id()
 
                 new_todo = {
                     "id": new_id,
@@ -991,6 +1282,7 @@ class ModernTodoAppWindow(QMainWindow):
                 self.todos.append(new_todo)
                 self._persist_todos()
                 self.update_list_widget(changed_ids={new_id})
+        return accepted
 
     def _normalize_todo_id(self, raw_id: object) -> Optional[int]:
         """尝试将传入的任务 ID 规范化为 Python int。"""
@@ -1033,30 +1325,33 @@ class ModernTodoAppWindow(QMainWindow):
             QMessageBox.warning(self, "错误", "收到无效的任务标识，无法删除。")
             return
 
-        todo_to_delete = next((t for t in self.todos if t.get("id") == normalized_id), None)
-        item_text = (
-            f"待办事项 \"{todo_to_delete['text'][:30]}{'...' if len(todo_to_delete['text']) > 30 else ''}\""
-            if todo_to_delete
-            else "这个待办事项"
+        delete_index = next(
+            (idx for idx, item in enumerate(self.todos) if item.get("id") == normalized_id),
+            None,
         )
-        if (
-            QMessageBox.question(
-                self,
-                "确认删除",
-                f"您确定要删除 {item_text} 吗？此操作无法撤销。",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            == QMessageBox.StandardButton.Yes
-        ):
-            self._remove_notification_task(normalized_id)
-            original_len = len(self.todos)
-            self.todos = [t for t in self.todos if t.get("id") != normalized_id]
-            if len(self.todos) < original_len:
+        if delete_index is None:
+            print(f"警告: 删除任务时未找到ID {normalized_id}。")
+            return
+
+        removed_snapshot = copy.deepcopy(self.todos[delete_index])
+        self._remove_notification_task(normalized_id)
+        del self.todos[delete_index]
+        self._persist_todos()
+        self.update_list_widget(changed_ids={normalized_id})
+
+        if hasattr(self, "undo_toast_bar"):
+            raw_text = str(removed_snapshot.get("text", ""))
+            preview = raw_text[:18] + ("…" if len(raw_text) > 18 else "")
+
+            def _undo_delete() -> None:
+                if any(item.get("id") == normalized_id for item in self.todos):
+                    return
+                insert_at = min(max(delete_index, 0), len(self.todos))
+                self.todos.insert(insert_at, copy.deepcopy(removed_snapshot))
                 self._persist_todos()
                 self.update_list_widget(changed_ids={normalized_id})
-            else:
-                print(f"警告: 删除任务时未找到ID {normalized_id}。")
+
+            self.undo_toast_bar.show_toast(f"已删除「{preview}」", _undo_delete)
 
     @Slot(object)
     def handle_toggle_complete_request(self, todo_id: object) -> None:
@@ -1069,9 +1364,13 @@ class ModernTodoAppWindow(QMainWindow):
             return
 
         changed = False
+        completed_snapshot: Optional[dict] = None
+        became_completed = False
         for index, todo in enumerate(self.todos):
             if todo.get("id") == normalized_id:
+                completed_snapshot = copy.deepcopy(todo)
                 is_now_completed = not todo.get("completed", False)
+                became_completed = is_now_completed
                 self.todos[index]["completed"] = is_now_completed
                 if is_now_completed:
                     self.todos[index].update(
@@ -1096,6 +1395,38 @@ class ModernTodoAppWindow(QMainWindow):
         if changed:
             self._persist_todos()
             self.update_list_widget(changed_ids={normalized_id})
+            current_filter = self.filter_combo.currentText()
+            hides_completed = current_filter in ("未完成", "今天到期", "已逾期", "高优先级")
+            if (
+                became_completed
+                and hides_completed
+                and completed_snapshot is not None
+                and hasattr(self, "undo_toast_bar")
+            ):
+                raw_text = str(completed_snapshot.get("text", ""))
+                preview = raw_text[:18] + ("…" if len(raw_text) > 18 else "")
+
+                def _undo_complete() -> None:
+                    for item in self.todos:
+                        if item.get("id") == normalized_id:
+                            item.update(
+                                {
+                                    "completed": bool(completed_snapshot.get("completed", False)),
+                                    "snoozeUntil": completed_snapshot.get("snoozeUntil"),
+                                    "notifiedForReminder": bool(
+                                        completed_snapshot.get("notifiedForReminder", False)
+                                    ),
+                                    "notifiedForDue": bool(
+                                        completed_snapshot.get("notifiedForDue", False)
+                                    ),
+                                    "lastNotifiedAt": completed_snapshot.get("lastNotifiedAt"),
+                                }
+                            )
+                            self._persist_todos()
+                            self.update_list_widget(changed_ids={normalized_id})
+                            break
+
+                self.undo_toast_bar.show_toast(f"已完成「{preview}」", _undo_complete)
         else:
             print(f"警告: 切换ID {normalized_id} 任务完成状态时未找到。")
 
@@ -1190,6 +1521,7 @@ class ModernTodoAppWindow(QMainWindow):
             self._sync_todo_card_sizes()
         self._restore_scroll_anchor(anchor)
         self._refresh_visible_todo_timers()
+        self._update_status_summary()
 
     def _todo_list_mapping_is_consistent(self) -> bool:
         """确认映射、列表项和卡片仍描述同一组可见任务。"""
@@ -1212,6 +1544,7 @@ class ModernTodoAppWindow(QMainWindow):
             for placeholder in (
                 self._empty_placeholder_widget,
                 self._empty_placeholder_label,
+                self._empty_reset_button,
             )
         ):
             return False
@@ -1244,6 +1577,7 @@ class ModernTodoAppWindow(QMainWindow):
         item_widget.request_toggle_complete.connect(
             self.handle_toggle_complete_request
         )
+        item_widget.request_quick_snooze.connect(self._handle_card_quick_snooze)
         widget_size_hint = item_widget.sizeHint()
         item_height = max(widget_size_hint.height(), item_widget.minimumHeight())
         list_item.setSizeHint(QSize(0, item_height))
@@ -1353,14 +1687,17 @@ class ModernTodoAppWindow(QMainWindow):
         self._empty_placeholder_item = None
         self._empty_placeholder_widget = None
         self._empty_placeholder_label = None
+        self._empty_reset_button = None
         if not processed:
             self._show_empty_list_message()
+            self._update_status_summary()
             return
 
         for target_row, todo_data in enumerate(processed):
             self._create_todo_list_entry(todo_data, target_row)
 
         self._sync_todo_card_sizes()
+        self._update_status_summary()
 
     def _sync_todo_card_sizes(self) -> None:
         """按最终 viewport 宽度同步卡片与 QListWidgetItem 的动态高度。"""
@@ -1403,14 +1740,25 @@ class ModernTodoAppWindow(QMainWindow):
     def _empty_list_message_text(self) -> str:
         if not self.todos:
             return "🎉 暂无待办事项！"
+        search_query = self.search_input.text().strip() if hasattr(self, "search_input") else ""
         filter_text = self.filter_combo.currentText()
+        if search_query:
+            return f"「{filter_text}」下未找到包含“{search_query}”的任务"
         return f"当前「{filter_text}」下暂无任务"
+
+    def _has_active_view_filters(self) -> bool:
+        filter_active = self.filter_combo.currentText() != "全部"
+        search_active = bool(self.search_input.text().strip()) if hasattr(self, "search_input") else False
+        return bool(self.todos) and (filter_active or search_active)
 
     def _show_empty_list_message(self) -> None:
         message = self._empty_list_message_text()
+        show_reset = self._has_active_view_filters()
         if self._empty_placeholder_item is not None:
             if self._empty_placeholder_label is not None:
                 self._empty_placeholder_label.setText(message)
+            if self._empty_reset_button is not None:
+                self._empty_reset_button.setVisible(show_reset)
             self._update_empty_placeholder_geometry()
             return
 
@@ -1418,13 +1766,21 @@ class ModernTodoAppWindow(QMainWindow):
         empty_container = QWidget()
         container_layout = QVBoxLayout(empty_container)
         container_layout.setContentsMargins(0, 40, 0, 40)
-        container_layout.setSpacing(0)
+        container_layout.setSpacing(10)
         container_layout.addStretch()
 
         empty_label = QLabel(message)
         empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_label.setWordWrap(True)
         empty_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         container_layout.addWidget(empty_label, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        reset_button = QPushButton("重置筛选与搜索")
+        reset_button.setObjectName("resetFilterButton")
+        reset_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        reset_button.setVisible(show_reset)
+        reset_button.clicked.connect(self.reset_filters_and_search)
+        container_layout.addWidget(reset_button, alignment=Qt.AlignmentFlag.AlignCenter)
         container_layout.addStretch()
 
         self.list_widget.addItem(empty_item)
@@ -1433,6 +1789,7 @@ class ModernTodoAppWindow(QMainWindow):
         self._empty_placeholder_item = empty_item
         self._empty_placeholder_widget = empty_container
         self._empty_placeholder_label = empty_label
+        self._empty_reset_button = reset_button
         self._apply_palette(self._palette)
         self._update_empty_placeholder_geometry()
         QTimer.singleShot(0, self._update_empty_placeholder_geometry)
@@ -1455,7 +1812,36 @@ class ModernTodoAppWindow(QMainWindow):
         self._empty_placeholder_item = None
         self._empty_placeholder_widget = None
         self._empty_placeholder_label = None
+        self._empty_reset_button = None
         return True
+
+    def _update_status_summary(self) -> None:
+        if not isinstance(self.todos, list):
+            return
+        now_utc = datetime.now(timezone.utc)
+        incomplete_count = 0
+        overdue_count = 0
+        for todo in self.todos:
+            if not isinstance(todo, dict) or todo.get("completed", False):
+                continue
+            incomplete_count += 1
+            due_utc = self._parse_iso_datetime(todo.get("dueDate"))
+            if due_utc is not None and due_utc <= now_utc:
+                overdue_count += 1
+
+        if not self.todos:
+            summary_text = "暂无待办"
+        elif incomplete_count == 0:
+            summary_text = f"全部已完成 ({len(self.todos)})"
+        elif overdue_count > 0:
+            summary_text = f"待办 {incomplete_count} · 逾期 {overdue_count}"
+        else:
+            summary_text = f"待办 {incomplete_count}"
+
+        if hasattr(self, "status_summary_label"):
+            self.status_summary_label.setText(summary_text)
+        if hasattr(self, "tray_icon"):
+            self.tray_icon.setToolTip(f"{APP_NAME} ({summary_text})")
 
     @staticmethod
     def _parse_iso_datetime(value: object) -> Optional[datetime]:
@@ -1471,16 +1857,20 @@ class ModernTodoAppWindow(QMainWindow):
 
     def _filter_todos(self, todos_list: List[dict]) -> List[dict]:
         filter_text = self.filter_combo.currentText()
-        if filter_text == "全部":
-            return todos_list
-
+        search_query = (
+            self.search_input.text().strip().lower()
+            if hasattr(self, "search_input")
+            else ""
+        )
         now_utc = datetime.now(timezone.utc)
         today_local = now_utc.astimezone().date()
         filtered: List[dict] = []
         for todo in todos_list:
             add = False
             is_completed = bool(todo.get("completed", False))
-            if filter_text == "未完成":
+            if filter_text == "全部":
+                add = True
+            elif filter_text == "未完成":
                 add = not is_completed
             elif filter_text == "已完成":
                 add = is_completed
@@ -1494,6 +1884,9 @@ class ModernTodoAppWindow(QMainWindow):
                     add = True
             elif filter_text == "高优先级" and not is_completed and todo.get("priority") == "高":
                 add = True
+            if add and search_query:
+                if search_query not in str(todo.get("text", "")).lower():
+                    add = False
             if add:
                 filtered.append(todo)
         return filtered
@@ -1634,6 +2027,7 @@ class ModernTodoAppWindow(QMainWindow):
         self.settings.setValue("windowState", self.saveState())
         self.settings.setValue("filterOption", self.filter_combo.currentText())
         self.settings.setValue("sortOption", self.sort_combo.currentText())
+        self.settings.setValue("windowAlwaysOnTop", self._always_on_top)
         self.settings.sync()
 
     def restore_geometry_and_state(self) -> None:
@@ -1641,6 +2035,7 @@ class ModernTodoAppWindow(QMainWindow):
         state_bytes = self.settings.value("windowState")
         saved_filter = self.settings.value("filterOption")
         saved_sort = self.settings.value("sortOption")
+        saved_pin = self.settings.value("windowAlwaysOnTop")
         self._restoring_view_options = True
         try:
             if isinstance(saved_filter, str) and self.filter_combo.findText(saved_filter) >= 0:
@@ -1649,6 +2044,15 @@ class ModernTodoAppWindow(QMainWindow):
                 self.sort_combo.setCurrentText(saved_sort)
         finally:
             self._restoring_view_options = False
+        if isinstance(saved_pin, bool):
+            pinned = saved_pin
+        elif isinstance(saved_pin, int):
+            pinned = bool(saved_pin)
+        elif isinstance(saved_pin, str):
+            pinned = saved_pin.strip().lower() in ("true", "1", "yes")
+        else:
+            pinned = False
+        self._apply_pin_state(pinned, persist=False)
         screen = QApplication.primaryScreen()
         target_width, target_height = 320, 640
         if screen:
@@ -1715,6 +2119,23 @@ class ModernTodoAppWindow(QMainWindow):
         self._empty_placeholder_widget.setMinimumSize(width, height)
 
     def eventFilter(self, watched: object, event: QEvent) -> bool:  # noqa: N802
+        if (
+            hasattr(self, "quick_add_input")
+            and watched is self.quick_add_input
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+        ):
+            open_full = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            self._submit_quick_add(open_full_dialog=open_full)
+            return True
+        if (
+            hasattr(self, "search_input")
+            and watched is self.search_input
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() == Qt.Key.Key_Escape
+        ):
+            self._handle_escape_shortcut()
+            return True
         if (
             hasattr(self, "list_widget")
             and watched is self.list_widget.viewport()

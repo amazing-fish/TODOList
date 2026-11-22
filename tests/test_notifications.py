@@ -94,16 +94,22 @@ class NotificationDialogTest(unittest.TestCase):
         completed: list[list[int]] = []
         snoozed: list[tuple[list[int], timedelta]] = []
         ignored: list[list[int]] = []
+        acknowledged: list[list[int]] = []
+        edited: list[int] = []
         dialog.complete_requested.connect(completed.append)
         dialog.snooze_requested.connect(lambda ids, duration: snoozed.append((ids, duration)))
         dialog.ignore_requested.connect(ignored.append)
+        dialog.acknowledge_requested.connect(acknowledged.append)
+        dialog.edit_requested.connect(edited.append)
 
         complete_first = dialog.findChild(QPushButton, "notificationComplete_1")
         snooze_second = dialog.findChild(QToolButton, "notificationSnooze_2")
-        ignore_first = dialog.findChild(QPushButton, "notificationIgnore_1")
+        edit_first = dialog.findChild(QPushButton, "notificationEdit_1")
+        ack_first = dialog.findChild(QPushButton, "notificationAck_1")
         self.assertIsNotNone(complete_first)
         self.assertIsNotNone(snooze_second)
-        self.assertIsNotNone(ignore_first)
+        self.assertIsNotNone(edit_first)
+        self.assertIsNotNone(ack_first)
         self.assertEqual(snooze_second.text(), "推迟1h")
         self.assertEqual(
             snooze_second.toolButtonStyle(),
@@ -121,20 +127,29 @@ class NotificationDialogTest(unittest.TestCase):
             QToolButton.ToolButtonPopupMode.MenuButtonPopup,
         )
         self.assertIn("点击箭头", snooze_second.toolTip())
-        self.assertEqual(ignore_first.text(), "忽略")
-        self.assertIn("清除截止时间", ignore_first.toolTip())
+        self.assertEqual(edit_first.text(), "编辑")
+        self.assertEqual(ack_first.text(), "知道了")
+        self.assertIn("保留任务与原截止时间", ack_first.toolTip())
+        menu_actions = snooze_second.menu().actions()
         self.assertEqual(
-            [action.text() for action in snooze_second.menu().actions()],
-            ["15分钟后", "1小时后", "晚上8点", "明天上午9点"],
+            [action.text() for action in menu_actions if not action.isSeparator()],
+            ["15分钟后", "1小时后", "晚上8点", "明天上午9点", "取消截止时间"],
         )
 
         complete_first.click()
         snooze_second.click()
-        ignore_first.click()
+        edit_first.click()
+        ack_first.click()
+        cancel_due_action = next(
+            action for action in menu_actions if action.text() == "取消截止时间"
+        )
+        cancel_due_action.trigger()
 
         self.assertEqual(completed, [[1]])
         self.assertEqual(snoozed, [([2], timedelta(hours=1))])
-        self.assertEqual(ignored, [[1]])
+        self.assertEqual(edited, [1])
+        self.assertEqual(acknowledged, [[1]])
+        self.assertEqual(ignored, [[2]])
 
     def test_snooze_menu_keeps_alternative_duration_separate_from_primary(self) -> None:
         dialog = NotificationDialog([(make_todo(1, "第一项"), True)])
@@ -244,6 +259,8 @@ class FakeNotificationDialog:
         self.complete_requested = FakeSignal()
         self.snooze_requested = FakeSignal()
         self.ignore_requested = FakeSignal()
+        self.acknowledge_requested = FakeSignal()
+        self.edit_requested = FakeSignal()
         self.open_main_window_requested = FakeSignal()
         self.finished = FakeSignal()
         if isinstance(requests, list):

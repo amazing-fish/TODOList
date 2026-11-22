@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import datetime, time, timedelta, timezone
+from typing import Callable, Optional
 
-from PySide6.QtCore import Qt, QSize, Signal, QEvent, QPoint, QPointF, QRect, QRectF
+from PySide6.QtCore import Qt, QSize, Signal, QEvent, QPoint, QPointF, QRect, QRectF, QTimer
 from PySide6.QtGui import (
     QColor,
     QIcon,
@@ -18,9 +18,11 @@ from PySide6.QtGui import (
     QTextOption,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -51,8 +53,10 @@ from .constants import (
     TASK_DETAILS_MINIMUM_TEXT_WIDTH,
     TASK_DETAILS_MINIMUM_VERTICAL_SPACE,
     TASK_DETAILS_VERTICAL_MARGIN,
+    TASK_META_ROW_SPACING,
     TASK_TIMER_MINIMUM_WIDTH,
     TASK_TEXT_MAXIMUM_LINES,
+    UNDO_TOAST_DURATION_MS,
 )
 from .layout import (
     LayoutRect,
@@ -396,7 +400,10 @@ class _PerLineElidedTaskLabel(QLabel):
 
 
 class _TaskDetailsPopup(QFrame):
-    """不抢占焦点的纯文本任务详情浮层。"""
+    """不抢占焦点的纯文本任务详情浮层，支持悬停移入与文本选择复制。"""
+
+    hover_entered = Signal()
+    hover_left = Signal()
 
     def __init__(self, parent: QWidget):
         flags = (
@@ -408,8 +415,9 @@ class _TaskDetailsPopup(QFrame):
         self.setObjectName("TodoTaskDetailsPopup")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setMouseTracking(True)
+        self._is_hovered = False
         self.setMaximumWidth(TASK_DETAILS_MAXIMUM_WIDTH)
 
         layout = QVBoxLayout(self)
@@ -445,11 +453,28 @@ class _TaskDetailsPopup(QFrame):
         )
         self.details_label.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.details_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.NoTextInteraction
+            Qt.TextInteractionFlag.TextSelectableByMouse
         )
         self.scroll_area.setWidget(self.details_label)
         layout.addWidget(self.scroll_area)
         self.hide()
+
+    def is_hovered(self) -> bool:
+        return self._is_hovered
+
+    def enterEvent(self, event: QEvent) -> None:  # noqa: N802
+        self._is_hovered = True
+        self.hover_entered.emit()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event: QEvent) -> None:  # noqa: N802
+        self._is_hovered = False
+        self.hover_left.emit()
+        super().leaveEvent(event)
+
+    def hideEvent(self, event: QEvent) -> None:  # noqa: N802
+        self._is_hovered = False
+        super().hideEvent(event)
 
     def set_details_text(self, text: str) -> None:
         """保留原文并按最大宽度计算紧凑的自动换行尺寸。"""
@@ -581,12 +606,25 @@ class _TaskDetailsPopup(QFrame):
         )
 
 
+def _tomorrow_nine_am_snooze_delta(now_utc: Optional[datetime] = None) -> timedelta:
+    """按激活时刻的本地日历与明日真实 DST/时区偏移计算至次日 09:00 的推迟时长。"""
+
+    current_utc = now_utc or datetime.now(timezone.utc)
+    if current_utc.tzinfo is None:
+        current_utc = current_utc.replace(tzinfo=timezone.utc)
+    today_local = current_utc.astimezone().date()
+    tomorrow_local_naive = datetime.combine(today_local + timedelta(days=1), time(9, 0))
+    tomorrow_utc = tomorrow_local_naive.astimezone().astimezone(timezone.utc)
+    return max(tomorrow_utc - current_utc, timedelta(seconds=1))
+
+
 class TodoItemWidget(QFrame):
-    """待办事项卡片。"""
+    """待办事项二维卡片：上行全宽正文，下行优先级/循环/计时元信息。"""
 
     request_edit = Signal(object)
     request_delete = Signal(object)
     request_toggle_complete = Signal(object)
+    request_quick_snooze = Signal(object, object)
 
     def __init__(
         self, todo_item: dict, parent: Optional[QWidget] = None, *, palette: Optional[ThemeColors] = None
@@ -601,6 +639,10 @@ class TodoItemWidget(QFrame):
         self._applying_layout = False
         self._rendered_completed_state: Optional[bool] = None
         self._rendered_timer_state: Optional[_TimerPresentation] = None
+        self._details_hide_timer = QTimer(self)
+        self._details_hide_timer.setSingleShot(True)
+        self._details_hide_timer.setInterval(160)
+        self._details_hide_timer.timeout.connect(self._hide_task_details_if_unhovered)
         self._build_ui()
         self.apply_palette(self._palette)
 
@@ -623,7 +665,7 @@ class TodoItemWidget(QFrame):
         self.complete_button.setIconSize(QSize(20, 20))
         self.complete_button.setToolTip("标记为完成/未完成")
         self.complete_button.clicked.connect(self._toggle_complete)
-        main_layout.addWidget(self.complete_button)
+        main_layout.addWidget(self.complete_button, 0, Qt.AlignmentFlag.AlignTop)
 
         self.content_container = QWidget()
         content_policy = QSizePolicy(
@@ -649,20 +691,29 @@ class TodoItemWidget(QFrame):
         self.task_text_label.setFont(font)
         self.task_details_popup = _TaskDetailsPopup(self)
         self.task_text_label.details_requested.connect(self._show_task_details)
-        self.task_text_label.details_dismissed.connect(self._hide_task_details)
+        self.task_text_label.details_dismissed.connect(self._schedule_hide_task_details)
         self.task_text_label.details_requirement_changed.connect(
             self._handle_task_details_requirement
         )
         self.task_text_label.details_scroll_requested.connect(
             self._handle_task_details_scroll
         )
+        self.task_details_popup.hover_entered.connect(self._details_hide_timer.stop)
+        self.task_details_popup.hover_left.connect(self._schedule_hide_task_details)
+
+        self.meta_row_widget = QWidget()
+        meta_layout = QHBoxLayout(self.meta_row_widget)
+        meta_layout.setContentsMargins(0, 0, 0, 0)
+        meta_layout.setSpacing(TASK_META_ROW_SPACING)
 
         priority = self.todo_item.get("priority", "中")
         self.priority_label = QLabel(priority)
         self.priority_label.setTextFormat(Qt.TextFormat.RichText)
-        content_layout.addWidget(self.task_text_label)
-        content_layout.addWidget(self.priority_label)
-        main_layout.addWidget(self.content_container, 1)
+
+        # Phase 3 预留循环规则槽位；未设置循环时隐藏。
+        self.recurrence_badge_label = QLabel()
+        self.recurrence_badge_label.setObjectName("TodoRecurrenceBadge")
+        self.recurrence_badge_label.setVisible(False)
 
         self.timer_display_label = _ElidedLabel(
             "无计时",
@@ -670,11 +721,20 @@ class TodoItemWidget(QFrame):
         )
         self.timer_display_label.setMinimumWidth(TASK_TIMER_MINIMUM_WIDTH)
         self.timer_display_label.setSizePolicy(
-            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Preferred,
         )
-        self.timer_display_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        main_layout.addWidget(self.timer_display_label)
+        self.timer_display_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+
+        meta_layout.addWidget(self.priority_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        meta_layout.addWidget(self.recurrence_badge_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        meta_layout.addWidget(self.timer_display_label, 1, Qt.AlignmentFlag.AlignVCenter)
+
+        content_layout.addWidget(self.task_text_label)
+        content_layout.addWidget(self.meta_row_widget)
+        main_layout.addWidget(self.content_container, 1)
 
         self.actions_container = QWidget(self)
         self.actions_container.setObjectName("TodoActionsContainer")
@@ -800,8 +860,69 @@ class TodoItemWidget(QFrame):
 
     def leaveEvent(self, event: QEvent) -> None:  # noqa: N802
         self.actions_container.hide()
-        self._hide_task_details()
+        self._schedule_hide_task_details()
         super().leaveEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._edit_item()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def contextMenuEvent(self, event) -> None:  # noqa: N802
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"""
+            QMenu {{
+                background-color: {self._palette.secondary_background};
+                color: {self._palette.text_primary};
+                border: 1px solid {self._palette.card_border};
+                padding: 4px;
+            }}
+            QMenu::item {{ padding: 6px 16px; }}
+            QMenu::item:selected {{
+                background-color: {self._palette.accent};
+                color: {self._palette.inverse_text};
+            }}
+            """
+        )
+        is_completed = bool(self.todo_item.get("completed", False))
+        has_due_date = bool(self.todo_item.get("dueDate"))
+        menu.addAction("编辑任务", self._edit_item)
+        menu.addAction(
+            "标记为未完成" if is_completed else "标记为已完成",
+            self._toggle_complete,
+        )
+        snooze_menu = menu.addMenu("快速推迟")
+        snooze_menu.setEnabled((not is_completed) and has_due_date)
+        todo_id = self.todo_item.get("id")
+        snooze_menu.addAction(
+            "15分钟后",
+            lambda _checked=False, tid=todo_id: self.request_quick_snooze.emit(
+                tid, timedelta(minutes=15)
+            ),
+        )
+        snooze_menu.addAction(
+            "1小时后",
+            lambda _checked=False, tid=todo_id: self.request_quick_snooze.emit(
+                tid, timedelta(hours=1)
+            ),
+        )
+        snooze_menu.addAction(
+            "明天上午9点",
+            lambda _checked=False, tid=todo_id: self.request_quick_snooze.emit(
+                tid, _tomorrow_nine_am_snooze_delta()
+            ),
+        )
+        menu.addAction(
+            "复制任务内容",
+            lambda _checked=False: QApplication.clipboard().setText(self.original_text),
+        )
+        menu.addSeparator()
+        menu.addAction("删除任务", self._delete_item)
+        menu.exec(event.globalPos())
+        event.accept()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -827,6 +948,7 @@ class TodoItemWidget(QFrame):
         super().hideEvent(event)
 
     def _show_task_details(self) -> None:
+        self._details_hide_timer.stop()
         if not self.task_text_label.needs_details():
             return
         self.task_details_popup.set_details_text(self.original_text)
@@ -836,7 +958,16 @@ class TodoItemWidget(QFrame):
         self.task_details_popup.show()
         self.task_details_popup.raise_()
 
+    def _schedule_hide_task_details(self) -> None:
+        if self.task_details_popup.isVisible():
+            self._details_hide_timer.start()
+
+    def _hide_task_details_if_unhovered(self) -> None:
+        if not self.task_text_label.is_hovered() and not self.task_details_popup.is_hovered():
+            self.task_details_popup.hide()
+
     def _hide_task_details(self) -> None:
+        self._details_hide_timer.stop()
         self.task_details_popup.hide()
 
     def _handle_task_details_requirement(self, required: bool) -> None:
@@ -980,6 +1111,26 @@ class TodoItemWidget(QFrame):
         task_margins = self.task_text_label.contentsMargins()
         timer_contents = self.timer_display_label.contentsRect()
         task_contents = self.task_text_label.contentsRect()
+        meta_layout = self.meta_row_widget.layout()
+        meta_spacing = meta_layout.spacing() if meta_layout is not None else TASK_META_ROW_SPACING
+        recurrence_width = (
+            self.recurrence_badge_label.sizeHint().width()
+            if self.recurrence_badge_label.isVisible()
+            else 0
+        )
+        priority_height = max(
+            self.priority_label.minimumHeight(),
+            self.priority_label.sizeHint().height(),
+        )
+        timer_height = max(
+            self.timer_display_label.minimumHeight(),
+            self.timer_display_label.sizeHint().height(),
+        )
+        if self.recurrence_badge_label.isVisible():
+            priority_height = max(
+                priority_height,
+                self.recurrence_badge_label.sizeHint().height(),
+            )
         return TaskCardLayoutInput(
             viewport_width=viewport_width,
             list_spacing=self._list_spacing,
@@ -1020,10 +1171,7 @@ class TodoItemWidget(QFrame):
                 content_margins.top() + content_margins.bottom()
             ),
             content_layout_spacing=content_layout.spacing(),
-            priority_height=max(
-                self.priority_label.minimumHeight(),
-                self.priority_label.sizeHint().height(),
-            ),
+            priority_height=priority_height,
             timer_natural_width=self.timer_display_label.sizeHint().width(),
             timer_base_minimum_width=TASK_TIMER_MINIMUM_WIDTH,
             timer_prefix_minimum_width=(
@@ -1033,12 +1181,11 @@ class TodoItemWidget(QFrame):
                 self.timer_display_label.width() - timer_contents.width(),
                 0,
             ),
-            timer_height=max(
-                self.timer_display_label.minimumHeight(),
-                self.timer_display_label.sizeHint().height(),
-            ),
+            timer_height=timer_height,
             action_area_width=TASK_ACTION_AREA_WIDTH,
             card_minimum_height=TASK_CARD_MINIMUM_HEIGHT,
+            meta_row_spacing=meta_spacing,
+            recurrence_badge_width=recurrence_width,
         )
 
     def _position_actions_overlay(
@@ -1152,6 +1299,24 @@ class TodoItemWidget(QFrame):
         self._rendered_completed_state = is_completed
         return True
 
+    @staticmethod
+    def _format_due_moment_label(
+        due_date_utc: datetime,
+        current_time_utc: datetime,
+    ) -> str:
+        try:
+            local_due = due_date_utc.astimezone()
+            local_now = current_time_utc.astimezone()
+        except (OSError, OverflowError, ValueError):
+            return due_date_utc.strftime("%Y-%m-%d %H:%M UTC")
+        if local_due.date() == local_now.date():
+            return f"今天 {local_due:%H:%M}"
+        if local_due.date() == local_now.date() + timedelta(days=1):
+            return f"明天 {local_due:%H:%M}"
+        if local_due.year == local_now.year:
+            return f"{local_due:%m-%d %H:%M}"
+        return f"{local_due:%Y-%m-%d %H:%M}"
+
     def _timer_presentation(
         self,
         current_time_utc: datetime,
@@ -1202,6 +1367,8 @@ class TodoItemWidget(QFrame):
             due_date_dt = datetime.fromisoformat(
                 due_date_str.replace("Z", "+00:00")
             )
+            if due_date_dt.tzinfo is None:
+                due_date_dt = due_date_dt.replace(tzinfo=timezone.utc)
         except ValueError:
             return _TimerPresentation(
                 text="日期格式错误!",
@@ -1211,11 +1378,12 @@ class TodoItemWidget(QFrame):
 
         diff = due_date_dt - current_time_utc
         time_left_str = self._format_timedelta(diff)
+        abs_label = self._format_due_moment_label(due_date_dt, current_time_utc)
         if diff.total_seconds() <= 0:
             return _TimerPresentation(
-                text=f"已到期 ({time_left_str.replace('-', '')})",
+                text=f"已到期 ({time_left_str.replace('-', '')} · {abs_label})",
                 color=self._palette.due_critical,
-                point_size=10,
+                point_size=9,
                 bold=True,
             )
 
@@ -1225,7 +1393,7 @@ class TodoItemWidget(QFrame):
             else self._palette.timer_positive
         )
         return _TimerPresentation(
-            text=f"剩余: {time_left_str}",
+            text=f"剩余: {time_left_str} · {abs_label}",
             color=color,
             bold=True,
         )
@@ -1293,4 +1461,133 @@ class TodoItemWidget(QFrame):
         return f"-{formatted_str}" if is_past else formatted_str
 
 
-__all__ = ["TodoItemWidget"]
+class UndoToastBar(QFrame):
+    """底部非阻塞 5 秒撤销提示条。"""
+
+    def __init__(self, parent: Optional[QWidget] = None, *, palette: Optional[ThemeColors] = None):
+        super().__init__(parent)
+        self.setObjectName("undoToastBar")
+        self._theme_manager = get_theme_manager()
+        self._palette = palette or self._theme_manager.current_palette
+        self._undo_callback: Optional[Callable[[], None]] = None
+        self._pending_duration_ms: int = 0
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self.dismiss)
+        self._build_ui()
+        self.apply_palette(self._palette)
+        self.setVisible(False)
+
+    def _build_ui(self) -> None:
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(8)
+
+        self.message_label = _ElidedLabel("", self)
+        self.message_label.setObjectName("undoToastMessageLabel")
+        self.message_label.setMinimumWidth(0)
+        self.message_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
+        layout.addWidget(self.message_label, 1)
+
+        self.undo_button = QPushButton("撤销")
+        self.undo_button.setObjectName("undoToastUndoButton")
+        self.undo_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.undo_button.clicked.connect(self.trigger_undo)
+        layout.addWidget(self.undo_button)
+
+        self.close_button = QPushButton("×")
+        self.close_button.setObjectName("undoToastCloseButton")
+        self.close_button.setFixedSize(22, 22)
+        self.close_button.setToolTip("关闭提示")
+        self.close_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_button.clicked.connect(self.dismiss)
+        layout.addWidget(self.close_button)
+
+    def show_toast(
+        self,
+        message: str,
+        undo_callback: Callable[[], None],
+        duration_ms: int = UNDO_TOAST_DURATION_MS,
+    ) -> None:
+        self._timer.stop()
+        self._undo_callback = undo_callback
+        self._pending_duration_ms = max(0, int(duration_ms))
+        self.message_label.set_full_text(message)
+        self.setVisible(True)
+        if self.isVisible() and self._pending_duration_ms > 0:
+            duration = self._pending_duration_ms
+            self._pending_duration_ms = 0
+            self._timer.start(duration)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if (
+            self._pending_duration_ms > 0
+            and self._undo_callback is not None
+            and not self._timer.isActive()
+        ):
+            duration = self._pending_duration_ms
+            self._pending_duration_ms = 0
+            self._timer.start(duration)
+
+    def has_active_undo(self) -> bool:
+        return not self.isHidden() and self._undo_callback is not None
+
+    def trigger_undo(self) -> bool:
+        callback = self._undo_callback
+        if callback is None:
+            self.dismiss()
+            return False
+        self.dismiss()
+        callback()
+        return True
+
+    def dismiss(self) -> None:
+        self._timer.stop()
+        self._pending_duration_ms = 0
+        self._undo_callback = None
+        self.setVisible(False)
+
+    def apply_palette(self, palette: ThemeColors) -> None:
+        self._palette = palette
+        self.setStyleSheet(
+            f"""
+            QFrame#undoToastBar {{
+                background-color: {palette.secondary_background};
+                border: 1px solid {palette.accent};
+                border-radius: 6px;
+            }}
+            QLabel#undoToastMessageLabel {{
+                color: {palette.text_primary};
+                font-size: 9pt;
+                background-color: transparent;
+            }}
+            QPushButton#undoToastUndoButton {{
+                background-color: {palette.accent};
+                color: {palette.inverse_text};
+                border: none;
+                border-radius: 4px;
+                padding: 4px 10px;
+                font-size: 9pt;
+                font-weight: bold;
+            }}
+            QPushButton#undoToastUndoButton:hover {{
+                background-color: {palette.accent_hover};
+            }}
+            QPushButton#undoToastCloseButton {{
+                background-color: transparent;
+                color: {palette.text_secondary};
+                border: none;
+                font-size: 11pt;
+            }}
+            QPushButton#undoToastCloseButton:hover {{
+                color: {palette.text_primary};
+            }}
+            """
+        )
+
+
+__all__ = ["TodoItemWidget", "UndoToastBar"]

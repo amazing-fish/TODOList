@@ -173,6 +173,7 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
         self.assertFalse(popup.frameGeometry().intersects(actions_rect))
 
         widget.task_text_label.leaveEvent(QEvent(QEvent.Type.Leave))
+        widget._hide_task_details_if_unhovered()
         self.app.processEvents()
         self.assertFalse(popup.isVisible())
 
@@ -409,32 +410,16 @@ class TodoItemWidgetLayoutTest(unittest.TestCase):
 
         widget.update_timer_display(now)
         self.app.processEvents()
-        self.assertEqual(widget.timer_display_label.text(), "剩余: 1秒")
+        self.assertTrue(widget.timer_display_label.text().startswith("剩余: 1秒 · "))
+        initial_task_width = widget.task_text_label.width()
         initial_details_required = widget.task_text_label.needs_details()
-        widget.task_text_label.enterEvent(
-            QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1))
-        )
-        self.app.processEvents()
-        self.assertFalse(widget.task_details_popup.isVisible())
 
         widget.update_timer_display(now + timedelta(days=100_000))
         self.app.processEvents()
 
         self.assertTrue(widget.timer_display_label.text().startswith("已到期"))
-        self.assertEqual(
-            (initial_details_required, widget.task_text_label.needs_details()),
-            (False, True),
-            (
-                widget.task_text_label.width(),
-                widget.task_text_label.natural_width(),
-                widget.task_text_label.displayed_lines(),
-            ),
-        )
-        self.assertTrue(widget.task_details_popup.isVisible())
-        self.assertEqual(
-            widget.task_details_popup.details_label.text(),
-            widget.original_text,
-        )
+        self.assertEqual(widget.task_text_label.width(), initial_task_width)
+        self.assertEqual(widget.task_text_label.needs_details(), initial_details_required)
         self._assert_each_logical_line_fits(widget)
 
     def test_timer_status_full_text_is_preserved_for_supported_states(self) -> None:
@@ -730,10 +715,12 @@ class TodoListCardIntegrationTest(unittest.TestCase):
             ),
             card.delete_button,
         )
+        timer_in_card = QRect(
+            card.timer_display_label.mapTo(card, QPoint(0, 0)),
+            card.timer_display_label.size(),
+        )
         self.assertTrue(
-            card.actions_container.geometry().intersects(
-                card.timer_display_label.geometry()
-            )
+            card.actions_container.geometry().intersects(timer_in_card)
         )
         self.assertEqual(card.task_text_label.geometry(), idle_task_geometry)
         self.assertEqual(card.timer_display_label.geometry(), idle_timer_geometry)
@@ -815,7 +802,7 @@ class TodoListCardIntegrationTest(unittest.TestCase):
         self._settle_list_layout(window)
 
         timer = card.timer_display_label
-        self.assertEqual(timer.full_text, "剩余: 123天 4时")
+        self.assertTrue(timer.full_text.startswith("剩余: 123天 4时 · "))
         self.assertEqual(timer.text(), timer.full_text)
         self.assertEqual(timer.toolTip(), "")
         self.assertLess(card.content_container.minimumWidth(), 150)

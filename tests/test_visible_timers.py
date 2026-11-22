@@ -89,7 +89,7 @@ class VisibleTimerRefreshTest(unittest.TestCase):
         self.now += timedelta(minutes=30)
         self.list_widget.verticalScrollBar().setValue(self.list_widget.verticalScrollBar().maximum())
         self.assertIn(99, self.visible_ids())
-        self.assertEqual(card.timer_display_label.full_text, "剩余: 1时 30分")
+        self.assertTrue(card.timer_display_label.full_text.startswith("剩余: 1时 30分 · "))
         self.save.assert_not_called()
 
     def test_resize_exposes_current_timer_without_waiting_for_tick(self) -> None:
@@ -99,7 +99,7 @@ class VisibleTimerRefreshTest(unittest.TestCase):
         self.window.resize(440, 1000)
         self.app.processEvents()
         self.assertIn(first_hidden_id, self.visible_ids())
-        self.assertEqual(card.timer_display_label.full_text, "剩余: 1时 30分")
+        self.assertTrue(card.timer_display_label.full_text.startswith("剩余: 1时 30分 · "))
 
     def test_filter_reuses_card_and_refreshes_its_stale_timer(self) -> None:
         card = self.window._todo_widgets_by_id[99]
@@ -107,7 +107,7 @@ class VisibleTimerRefreshTest(unittest.TestCase):
         self.window.filter_combo.setCurrentText("高优先级")
         self.app.processEvents()
         self.assertIs(self.window._todo_widgets_by_id[99], card)
-        self.assertEqual(card.timer_display_label.full_text, "剩余: 1时 30分")
+        self.assertTrue(card.timer_display_label.full_text.startswith("剩余: 1时 30分 · "))
 
     def test_hidden_window_skips_timer_work_and_restore_refreshes_immediately(self) -> None:
         self.window.hide()
@@ -122,9 +122,10 @@ class VisibleTimerRefreshTest(unittest.TestCase):
         self.window.show()
         self.app.processEvents()
         for todo_id in self.visible_ids():
-            self.assertEqual(
-                self.window._todo_widgets_by_id[todo_id].timer_display_label.full_text,
-                "剩余: 1时 30分",
+            self.assertTrue(
+                self.window._todo_widgets_by_id[todo_id].timer_display_label.full_text.startswith(
+                    "剩余: 1时 30分 · "
+                ),
             )
 
     def test_filter_and_hidden_window_never_skip_due_notification_scan(self) -> None:
@@ -150,7 +151,7 @@ class VisibleTimerRefreshTest(unittest.TestCase):
             update.assert_not_called()
         self.window.showNormal()
         self.app.processEvents()
-        self.assertEqual(card.timer_display_label.full_text, "剩余: 1时 30分")
+        self.assertTrue(card.timer_display_label.full_text.startswith("剩余: 1时 30分 · "))
 
 
 if __name__ == "__main__":

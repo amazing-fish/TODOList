@@ -4,8 +4,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, time, timezone
 from typing import Optional
 
-from PySide6.QtCore import QDateTime, QTime, QTimer, Qt, Signal, Slot
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import QDateTime, QEvent, QTime, QTimer, Qt, Signal, Slot
+from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QDateEdit,
     QDialog,
@@ -44,6 +44,8 @@ class NotificationDialog(QDialog):
     complete_requested = Signal(list)
     snooze_requested = Signal(list, object)
     ignore_requested = Signal(list)
+    acknowledge_requested = Signal(object)
+    edit_requested = Signal(object)
     open_main_window_requested = Signal()
 
     def __init__(self, requests: list[tuple[dict, bool]], parent=None):
@@ -66,7 +68,7 @@ class NotificationDialog(QDialog):
     def _build_ui(self) -> None:
         self.setWindowTitle("任务提醒")
         self.setWindowIcon(get_icon(APP_ICON_PATH, "🔔"))
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(480)
         self.setModal(False)
         self.setWindowFlags(
             Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint
@@ -168,20 +170,28 @@ class NotificationDialog(QDialog):
                 lambda _checked=False, task_id=todo_id: self.snooze_default([task_id])
             )
 
-            ignore_action = QPushButton("忽略")
-            ignore_action.setObjectName(f"notificationIgnore_{todo_id}")
-            ignore_action.setProperty("notificationRowAction", True)
-            ignore_action.setProperty("notificationIgnoreAction", True)
-            ignore_action.setToolTip(
-                "保留此任务并清除截止时间；不会标记为完成，重新设置截止时间前不再提醒"
+            edit_action = QPushButton("编辑")
+            edit_action.setObjectName(f"notificationEdit_{todo_id}")
+            edit_action.setProperty("notificationRowAction", True)
+            edit_action.setProperty("notificationSecondaryAction", True)
+            edit_action.setToolTip("打开主窗口并编辑此任务")
+            edit_action.clicked.connect(
+                lambda _checked=False, task_id=todo_id: self.edit_requested.emit(task_id)
             )
-            ignore_action.clicked.connect(
-                lambda _checked=False, task_id=todo_id: self.ignore_requested.emit([task_id])
+
+            acknowledge_action = QPushButton("知道了")
+            acknowledge_action.setObjectName(f"notificationAck_{todo_id}")
+            acknowledge_action.setProperty("notificationRowAction", True)
+            acknowledge_action.setProperty("notificationSecondaryAction", True)
+            acknowledge_action.setToolTip("关闭本条提醒并保留任务与原截止时间")
+            acknowledge_action.clicked.connect(
+                lambda _checked=False, task_id=todo_id: self.acknowledge_requested.emit([task_id])
             )
 
             action_layout.addWidget(complete_action)
             action_layout.addWidget(snooze_action)
-            action_layout.addWidget(ignore_action)
+            action_layout.addWidget(edit_action)
+            action_layout.addWidget(acknowledge_action)
             row_layout.addLayout(action_layout)
 
             self.tasks_layout.addWidget(row_widget)
@@ -194,7 +204,8 @@ class NotificationDialog(QDialog):
                 "status_label": status_label,
                 "complete_action": complete_action,
                 "snooze_action": snooze_action,
-                "ignore_action": ignore_action,
+                "edit_action": edit_action,
+                "acknowledge_action": acknowledge_action,
             }
             self._update_task_row(todo_id)
 
@@ -387,12 +398,14 @@ class NotificationDialog(QDialog):
             QPushButton:disabled, QToolButton:disabled {{
                 background-color: {palette.card_border}; color: {palette.text_secondary};
             }}
-            QPushButton#notificationOpenMainButton {{
+            QPushButton#notificationOpenMainButton,
+            QPushButton[notificationSecondaryAction="true"] {{
                 background-color: {palette.action_button_bg};
                 color: {palette.text_primary};
                 border: 1px solid {palette.action_button_border};
             }}
-            QPushButton#notificationOpenMainButton:hover {{
+            QPushButton#notificationOpenMainButton:hover,
+            QPushButton[notificationSecondaryAction="true"]:hover {{
                 border-color: {palette.accent};
                 background-color: {palette.action_edit_hover_bg};
             }}
@@ -467,6 +480,11 @@ class NotificationDialog(QDialog):
             "明天上午9点",
             lambda _checked=False: self.snooze_tomorrow_9am(todo_ids),
         )
+        menu.addSeparator()
+        menu.addAction(
+            "取消截止时间",
+            lambda _checked=False: self.ignore_requested.emit(list(todo_ids)),
+        )
         return menu
 
     def _emit_snooze_requested(
@@ -501,9 +519,16 @@ class NotificationDialog(QDialog):
 class TaskEditDialog(QDialog):
     """添加或编辑任务的对话框。"""
 
-    def __init__(self, todo_item: Optional[dict] = None, parent=None):
+    def __init__(
+        self,
+        todo_item: Optional[dict] = None,
+        parent=None,
+        *,
+        initial_text: str = "",
+    ):
         super().__init__(parent)
         self.todo_item = todo_item
+        self._initial_text = initial_text
         self.date_edit: Optional[QDateEdit] = None
         self.time_edit: Optional[QTimeEdit] = None
         self._preserved_due_selection: Optional[tuple[str, str]] = None
@@ -517,16 +542,19 @@ class TaskEditDialog(QDialog):
             self.populate_fields()
         else:
             self.setWindowTitle("添加新的待办事项")
+            if self._initial_text:
+                self.task_input.setPlainText(self._initial_text)
+        self._refresh_due_warning()
 
     def _build_ui(self) -> None:
         from PySide6.QtCore import QDate
         from PySide6.QtWidgets import QComboBox, QFrame, QTextEdit
 
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(360)
         self.setWindowIcon(get_icon(APP_ICON_PATH, "T"))
         layout = QVBoxLayout(self)
-        layout.setSpacing(15)
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+        layout.setContentsMargins(18, 18, 18, 18)
 
         self.info_label = QLabel()
         self.info_label.setObjectName("editInfoLabel")
@@ -534,10 +562,11 @@ class TaskEditDialog(QDialog):
         self.info_label.setVisible(False)
         layout.addWidget(self.info_label)
 
-        layout.addWidget(QLabel("任务内容:"))
+        layout.addWidget(QLabel("任务内容 (Ctrl+Enter 保存):"))
         self.task_input = QTextEdit()
         self.task_input.setPlaceholderText("输入待办事项内容 (可多行)...")
-        self.task_input.setMinimumHeight(60)
+        self.task_input.setMinimumHeight(68)
+        self.task_input.installEventFilter(self)
         layout.addWidget(self.task_input)
 
         options_layout = QHBoxLayout()
@@ -566,6 +595,7 @@ class TaskEditDialog(QDialog):
         due_date_frame = QFrame()
         due_date_layout = QVBoxLayout(due_date_frame)
         due_date_layout.setContentsMargins(0, 0, 0, 0)
+        due_date_layout.setSpacing(8)
 
         self.set_due_date_button = QPushButton("设置截止时间")
         self.set_due_date_button.setObjectName("setDueDateButton")
@@ -573,12 +603,33 @@ class TaskEditDialog(QDialog):
         self.set_due_date_button.toggled.connect(self.toggle_due_date_controls)
         due_date_layout.addWidget(self.set_due_date_button)
 
+        presets_layout = QHBoxLayout()
+        presets_layout.setContentsMargins(0, 0, 0, 0)
+        presets_layout.setSpacing(6)
+        self.preset_buttons: list[QPushButton] = []
+        for preset_key, label in (
+            ("1h", "1小时后"),
+            ("tonight", "今晚 20:00"),
+            ("tomorrow_9", "明天 09:00"),
+            ("next_mon_9", "下周一 09:00"),
+        ):
+            btn = QPushButton(label)
+            btn.setObjectName(f"duePreset_{preset_key}")
+            btn.setProperty("duePresetChip", True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _checked=False, k=preset_key: self._apply_due_preset(k))
+            presets_layout.addWidget(btn)
+            self.preset_buttons.append(btn)
+        presets_layout.addStretch(1)
+        due_date_layout.addLayout(presets_layout)
+
         self.due_date_controls_widget = QWidget()
         due_date_controls_layout = QHBoxLayout(self.due_date_controls_widget)
-        due_date_controls_layout.setContentsMargins(0, 5, 0, 0)
+        due_date_controls_layout.setContentsMargins(0, 2, 0, 0)
         due_date_controls_layout.addWidget(QLabel("时间:"))
         self.time_edit = QTimeEdit()
         self.time_edit.setDisplayFormat("HH:mm")
+        self.time_edit.timeChanged.connect(self._on_due_editor_changed)
         due_date_controls_layout.addWidget(self.time_edit, 1)
         due_date_controls_layout.addSpacerItem(QSpacerItem(10, 0))
         due_date_controls_layout.addWidget(QLabel("日期:"))
@@ -587,6 +638,7 @@ class TaskEditDialog(QDialog):
         self.date_edit.setCalendarPopup(True)
         self.date_edit.setMinimumDate(QDate(2000, 1, 1))
         self.date_edit.setDate(QDate.currentDate())
+        self.date_edit.dateChanged.connect(self._on_due_editor_changed)
         due_date_controls_layout.addWidget(self.date_edit, 1)
         due_date_layout.addWidget(self.due_date_controls_widget)
 
@@ -602,6 +654,11 @@ class TaskEditDialog(QDialog):
         self.button_box.rejected.connect(self.reject)
         layout.addWidget(self.button_box)
 
+        self._save_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
+        self._save_shortcut.activated.connect(self.accept)
+        self._save_enter_shortcut = QShortcut(QKeySequence("Ctrl+Enter"), self)
+        self._save_enter_shortcut.activated.connect(self.accept)
+
         if not self.todo_item:
             default_due = _default_due_datetime(QDateTime.currentDateTime())
             self.date_edit.setDate(default_due.date())
@@ -612,7 +669,7 @@ class TaskEditDialog(QDialog):
                 py_default_due_utc = py_default_due_utc.replace(tzinfo=timezone.utc)
             self._preserved_due_date_iso = py_default_due_utc.isoformat()
 
-        self.resize(400, 300)
+        self.resize(420, 340)
         self._apply_palette(self._palette)
 
     def _apply_palette(self, palette: ThemeColors) -> None:
@@ -650,6 +707,18 @@ class TaskEditDialog(QDialog):
             }}
             QPushButton#setDueDateButton:checked {{
                 background-color: {palette.accent_hover};
+            }}
+            QPushButton[duePresetChip="true"] {{
+                background-color: {palette.secondary_background};
+                color: {palette.text_primary};
+                border: 1px solid {palette.card_border};
+                border-radius: 12px;
+                padding: 4px 8px;
+                font-size: 8.5pt;
+            }}
+            QPushButton[duePresetChip="true"]:hover {{
+                border-color: {palette.accent};
+                color: {palette.accent};
             }}
             QDialogButtonBox QPushButton {{
                 background-color: {palette.accent};
@@ -712,7 +781,79 @@ class TaskEditDialog(QDialog):
 
     def toggle_due_date_controls(self, checked: bool) -> None:
         self.due_date_controls_widget.setVisible(checked)
+        self.reminder_combo.setEnabled(checked)
         self.set_due_date_button.setText("清除截止时间" if checked else "设置截止时间")
+        self._refresh_due_warning()
+
+    def _on_due_editor_changed(self, *_args: object) -> None:
+        self._refresh_due_warning()
+
+    def _apply_due_preset(self, preset_key: str) -> None:
+        from PySide6.QtCore import QDate
+
+        now_local = datetime.now().astimezone()
+        if preset_key == "1h":
+            target_dt = now_local + timedelta(hours=1)
+        elif preset_key == "tonight":
+            target_dt = datetime.combine(now_local.date(), time(20, 0), tzinfo=now_local.tzinfo)
+            if target_dt <= now_local:
+                target_dt = datetime.combine(
+                    now_local.date() + timedelta(days=1),
+                    time(20, 0),
+                    tzinfo=now_local.tzinfo,
+                )
+        elif preset_key == "tomorrow_9":
+            target_dt = datetime.combine(
+                now_local.date() + timedelta(days=1),
+                time(9, 0),
+                tzinfo=now_local.tzinfo,
+            )
+        else:
+            days_until_monday = (7 - now_local.weekday()) or 7
+            target_dt = datetime.combine(
+                now_local.date() + timedelta(days=days_until_monday),
+                time(9, 0),
+                tzinfo=now_local.tzinfo,
+            )
+
+        self._preserved_due_selection = None
+        self._preserved_due_date_iso = None
+        self.set_due_date_button.setChecked(True)
+        self.date_edit.setDate(QDate(target_dt.year, target_dt.month, target_dt.day))
+        self.time_edit.setTime(QTime(target_dt.hour, target_dt.minute))
+        self._refresh_due_warning()
+
+    def _refresh_due_warning(self) -> None:
+        if self.todo_item and self.todo_item.get("completed", False):
+            self.info_label.setText("提示：该任务已完成，修改内容会立即同步，请确认后保存。")
+            self.info_label.setVisible(True)
+            return
+
+        if self.todo_item is None and self.set_due_date_button.isChecked():
+            selected_time = self.time_edit.time()
+            visible_time = QTime(selected_time.hour(), selected_time.minute())
+            selected_utc = QDateTime(self.date_edit.date(), visible_time).toUTC().toPython()
+            if selected_utc.tzinfo is None:
+                selected_utc = selected_utc.replace(tzinfo=timezone.utc)
+            if selected_utc <= datetime.now(timezone.utc):
+                self.info_label.setText(
+                    "提示：所选截止时间早于当前时间，保存后将立即标记为已逾期。"
+                )
+                self.info_label.setVisible(True)
+                return
+
+        self.info_label.setVisible(False)
+
+    def eventFilter(self, watched: object, event: QEvent) -> bool:  # noqa: N802
+        if (
+            watched is getattr(self, "task_input", None)
+            and event.type() == QEvent.Type.KeyPress
+            and (event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+        ):
+            self.accept()
+            return True
+        return super().eventFilter(watched, event)
 
     def _current_due_selection(self) -> tuple[str, str]:
         return (
@@ -752,17 +893,6 @@ class TaskEditDialog(QDialog):
         if not text:
             QMessageBox.warning(self, "输入错误", "待办事项内容不能为空！")
             return
-
-        due_date_iso = self._serialize_due_date()
-        if due_date_iso:
-            py_due_date_utc = datetime.fromisoformat(due_date_iso.replace("Z", "+00:00"))
-            if py_due_date_utc.tzinfo is None:
-                py_due_date_utc = py_due_date_utc.replace(tzinfo=timezone.utc)
-            else:
-                py_due_date_utc = py_due_date_utc.astimezone(timezone.utc)
-            if self.todo_item is None and py_due_date_utc <= datetime.now(timezone.utc):
-                QMessageBox.warning(self, "时间错误", "新任务的截止时间必须是未来的某个时间点！")
-                return
 
         super().accept()
 
