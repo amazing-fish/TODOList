@@ -242,6 +242,7 @@ class ModernTodoAppWindow(QMainWindow):
         self._sound_enabled = True
         self._dnd_enabled = False
         self._dnd_until_utc: Optional[datetime] = None
+        self._pending_dnd_restore = False
         self._empty_placeholder_item: Optional[QListWidgetItem] = None
         self._empty_placeholder_widget: Optional[QWidget] = None
         self._empty_placeholder_label: Optional[QLabel] = None
@@ -844,7 +845,7 @@ class ModernTodoAppWindow(QMainWindow):
         if notification_requests and not dnd_active:
             self._show_notification_batch(notification_requests)
         elif (
-            was_dnd_enabled
+            (was_dnd_enabled or self._pending_dnd_restore)
             and not dnd_active
             and self._notification_dialog is not None
             and not self._notification_dialog.isVisible()
@@ -953,6 +954,7 @@ class ModernTodoAppWindow(QMainWindow):
     def _on_notification_dialog_finished(self, _result: int) -> None:
         if self._notification_dialog is self.sender():
             self._notification_dialog = None
+            self._pending_dnd_restore = False
 
     def _bump_schedule_revision(self, todo_id: object) -> int:
         normalized = self._normalize_todo_id(todo_id)
@@ -1076,10 +1078,15 @@ class ModernTodoAppWindow(QMainWindow):
                     if not restored_ids:
                         return True
                     if not self._persist_todos():
-                        for idx, item in enumerate(self.todos):
+                        restored_live: list[dict] = []
+                        for item in self.todos:
                             item_id = item.get("id")
                             if isinstance(item_id, int) and item_id in pre_undo_snapshots:
-                                self.todos[idx] = pre_undo_snapshots[item_id]
+                                item.clear()
+                                item.update(pre_undo_snapshots[item_id])
+                                restored_live.append(item)
+                        if restored_live and self._notification_dialog is not None:
+                            self._notification_dialog.refresh_tasks_if_present(restored_live)
                         QMessageBox.warning(
                             self,
                             "撤销失败",
@@ -1088,6 +1095,7 @@ class ModernTodoAppWindow(QMainWindow):
                         return False
                     for item_id in restored_ids:
                         self._bump_schedule_revision(item_id)
+                    self._remove_notification_tasks(list(restored_ids))
                     self.update_list_widget(changed_ids=restored_ids)
                     return True
 
@@ -1180,10 +1188,15 @@ class ModernTodoAppWindow(QMainWindow):
                     if not restored_ids:
                         return True
                     if not self._persist_todos():
-                        for idx, item in enumerate(self.todos):
+                        restored_live: list[dict] = []
+                        for item in self.todos:
                             tid = item.get("id")
                             if isinstance(tid, int) and tid in pre_undo_snapshots:
-                                self.todos[idx] = pre_undo_snapshots[tid]
+                                item.clear()
+                                item.update(pre_undo_snapshots[tid])
+                                restored_live.append(item)
+                        if restored_live and self._notification_dialog is not None:
+                            self._notification_dialog.refresh_tasks_if_present(restored_live)
                         QMessageBox.warning(
                             self,
                             "撤销失败",
@@ -1192,6 +1205,7 @@ class ModernTodoAppWindow(QMainWindow):
                         return False
                     for tid in restored_ids:
                         self._bump_schedule_revision(tid)
+                    self._remove_notification_tasks(list(restored_ids))
                     self.update_list_widget(changed_ids=restored_ids)
                     return True
 
@@ -1240,6 +1254,7 @@ class ModernTodoAppWindow(QMainWindow):
         if not self._notification_dialog.isVisible():
             self._notification_dialog.show()
         self._notification_dialog.raise_()
+        self._pending_dnd_restore = False
 
     def _hide_notification_dialog(self) -> None:
         if self._notification_dialog is not None:
@@ -1656,7 +1671,10 @@ class ModernTodoAppWindow(QMainWindow):
                             }
                         )
                         if not self._persist_todos():
-                            self.todos[idx] = pre_undo_snapshot
+                            item.clear()
+                            item.update(pre_undo_snapshot)
+                            if self._notification_dialog is not None:
+                                self._notification_dialog.refresh_tasks_if_present([item])
                             QMessageBox.warning(
                                 self,
                                 "撤销失败",
@@ -1664,6 +1682,7 @@ class ModernTodoAppWindow(QMainWindow):
                             )
                             return False
                         self._bump_schedule_revision(normalized_id)
+                        self._remove_notification_task(normalized_id)
                         self.update_list_widget(changed_ids={normalized_id})
                         return True
                 return True
@@ -1767,7 +1786,10 @@ class ModernTodoAppWindow(QMainWindow):
                                 )
                             item.update(restore_fields)
                             if not self._persist_todos():
-                                self.todos[idx] = pre_undo_snapshot
+                                item.clear()
+                                item.update(pre_undo_snapshot)
+                                if self._notification_dialog is not None:
+                                    self._notification_dialog.refresh_tasks_if_present([item])
                                 QMessageBox.warning(
                                     self,
                                     "撤销失败",
@@ -1775,6 +1797,7 @@ class ModernTodoAppWindow(QMainWindow):
                                 )
                                 return False
                             self._bump_schedule_revision(normalized_id)
+                            self._remove_notification_task(normalized_id)
                             self.update_list_widget(changed_ids={normalized_id})
                             return True
                     return True
@@ -2417,6 +2440,8 @@ class ModernTodoAppWindow(QMainWindow):
         self._dnd_until_utc = None
         self.settings.setValue("dndEnabled", False)
         self.settings.setValue("dndUntilUtc", "")
+        if self._notification_dialog is not None and not self._notification_dialog.isVisible():
+            self._pending_dnd_restore = True
         self._sync_dnd_ui()
         return False
 
@@ -2467,15 +2492,19 @@ class ModernTodoAppWindow(QMainWindow):
         self.settings.setValue("dndUntilUtc", "")
         self.settings.sync()
         if self._dnd_enabled:
+            self._pending_dnd_restore = False
             self._hide_notification_dialog()
         elif self.isVisible() and not self.isMinimized():
             self._restore_notification_dialog()
+        elif self._notification_dialog is not None and not self._notification_dialog.isVisible():
+            self._pending_dnd_restore = True
         self._sync_dnd_ui()
 
     def enable_dnd_for_one_hour(self) -> None:
         until_utc = datetime.now(timezone.utc) + timedelta(hours=1)
         self._dnd_enabled = True
         self._dnd_until_utc = until_utc
+        self._pending_dnd_restore = False
         self.settings.setValue("dndEnabled", True)
         self.settings.setValue("dndUntilUtc", until_utc.isoformat())
         self.settings.sync()
@@ -2722,7 +2751,7 @@ class ModernTodoAppWindow(QMainWindow):
         self.update_list_widget()
 
         def _undo_import() -> bool:
-            previous_todos = copy.deepcopy(self.todos)
+            previous_todos = list(self.todos)
             before_count = len(self.todos)
             self.todos = [
                 item
@@ -2738,6 +2767,7 @@ class ModernTodoAppWindow(QMainWindow):
                         "无法撤销导入并写回磁盘，已保留撤销操作，请稍后重试。",
                     )
                     return False
+                self._remove_notification_tasks(sorted(imported_ids))
                 self.update_list_widget()
             return True
 

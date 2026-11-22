@@ -978,6 +978,17 @@ class TaskEditDialog(QDialog):
         self._refresh_due_warning()
 
     def _on_due_editor_changed(self, *_args: object) -> None:
+        if (
+            self._preserve_empty_weekly
+            and hasattr(self, "recurrence_combo")
+            and self.set_due_date_button.isChecked()
+            and self.recurrence_combo.currentData() == "weekly"
+        ):
+            anchor_weekday = self.date_edit.date().dayOfWeek() - 1
+            for idx, btn in enumerate(self.weekly_day_buttons):
+                btn.blockSignals(True)
+                btn.setChecked(idx == anchor_weekday)
+                btn.blockSignals(False)
         self._refresh_due_warning()
 
     def _apply_due_preset(self, preset_key: str) -> None:

@@ -22,7 +22,9 @@ def _safe_int(value: Any, default: int) -> int:
         return default
 
 
-def _parse_utc_datetime(value: object) -> datetime | None:
+def _parse_utc_datetime(
+    value: object, *, raise_on_overflow: bool = False
+) -> datetime | None:
     """解析 ISO 时间，并统一为 UTC aware datetime。"""
 
     if not isinstance(value, str) or not value:
@@ -37,7 +39,9 @@ def _parse_utc_datetime(value: object) -> datetime | None:
         if parsed.tzinfo is None:
             return parsed.replace(tzinfo=timezone.utc)
         return parsed.astimezone(timezone.utc)
-    except OverflowError:
+    except OverflowError as exc:
+        if raise_on_overflow:
+            raise ValueError("截止时间转换为 UTC 后超出支持范围") from exc
         return None
 
 
@@ -297,7 +301,7 @@ def calculate_next_due_utc(
     else:
         ref_utc = reference_utc.astimezone(timezone.utc)
 
-    due_utc = _parse_utc_datetime(due_date_iso) or ref_utc
+    due_utc = _parse_utc_datetime(due_date_iso, raise_on_overflow=True) or ref_utc
     resolve_system_dst = target_tz is None
     if resolve_system_dst:
         anchor_local = due_utc.astimezone()

@@ -413,8 +413,9 @@ class SettingsAndWindowWorkflowTests(unittest.TestCase):
             self.assertFalse(window._notification_dialog.isVisible())
             self.assertIn(501, window._notification_dialog._task_rows)
 
-            # 勿扰到期即使无新触发任务，tick_update 也应主动恢复保留的通知批
+            # 勿扰到期即使先被状态栏刷新观察到过期（且无新触发任务），下一次 tick_update 仍应恢复保留批
             window._dnd_until_utc = datetime.now(timezone.utc) - timedelta(seconds=1)
+            self.assertIn("未开启", window.dnd_status_text())
             window.tick_update()
             self.assertFalse(window.is_dnd_active())
             self.assertTrue(window._notification_dialog.isVisible())
@@ -470,6 +471,15 @@ class SettingsAndWindowWorkflowTests(unittest.TestCase):
             self.assertEqual(imported, 1)
             self.assertIsInstance(window.todos[0]["id"], int)
             self.assertEqual(window.todos[0]["createdAt"], "2026-11-22T02:00:00+00:00")
+
+            # 导入任务触发通知行后，撤销导入成功应同时移除对应提醒行
+            with patch("todo_app.main_window.play_sound_effect"):
+                window._show_notification_batch([(window.todos[0], True)])
+                self.assertIn(window.todos[0]["id"], window._notification_dialog._task_rows)
+            with patch.object(window, "_persist_todos", return_value=True):
+                self.assertTrue(window.undo_toast_bar.trigger_undo())
+                self.assertEqual(window.todos, [])
+                self.assertIsNone(window._notification_dialog)
 
             # 3. 硬链接指向 active DATA_FILE 时 export_todos_to_file 通过 samefile 保护拒绝覆盖
             data_target = tmp_root / "active_todos.json"
