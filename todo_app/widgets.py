@@ -893,11 +893,12 @@ class TodoItemWidget(QFrame):
         is_completed = bool(self.todo_item.get("completed", False))
         has_due_date = bool(self.todo_item.get("dueDate"))
         has_recurrence = normalize_recurrence(self.todo_item.get("recurrence")) is not None
+        can_advance_recurrence = has_recurrence and has_due_date
         menu.addAction("编辑任务", self._edit_item)
         toggle_label = (
             "标记为未完成"
             if is_completed
-            else ("完成本周期（顺延下次）" if has_recurrence else "标记为已完成")
+            else ("完成本周期（顺延下次）" if can_advance_recurrence else "标记为已完成")
         )
         menu.addAction(toggle_label, self._toggle_complete)
         if has_recurrence and not is_completed:

@@ -194,10 +194,113 @@ class RecurrenceGuiTests(unittest.TestCase):
 
             window.handle_finish_recurrence_request(77)
             self.assertTrue(window.todos[0]["completed"])
+            self.assertIsNone(window.todos[0]["recurrence"])
             window.todos[0]["priority"] = "高"
             window.undo_toast_bar.trigger_undo()
             self.assertFalse(window.todos[0]["completed"])
+            self.assertEqual(window.todos[0]["recurrence"]["frequency"], "daily")
             self.assertEqual(window.todos[0]["priority"], "高")
+
+    def test_coderabbit_recurrence_edge_cases(self) -> None:
+        # 1. 非有限数 Infinity / NaN 不引发 OverflowError 且安全回退
+        inf_rule = normalize_recurrence({"frequency": "daily", "interval": float("inf")})
+        self.assertEqual(inf_rule, {"frequency": "daily", "interval": 1, "skipWeekends": False})
+        inf_weekly = normalize_recurrence({"frequency": "weekly", "weekdays": [float("inf"), 2]})
+        self.assertEqual(inf_weekly, {"frequency": "weekly", "weekdays": [2]})
+
+        # 2. 多年前的工作日任务顺延强制快进到晚于 reference_utc 的未来日期
+        old_due = datetime(2020, 1, 1, 9, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 11, 22, 12, 0, tzinfo=timezone.utc)
+        caught_up = calculate_next_due_utc(
+            old_due.isoformat(),
+            {"frequency": "weekdays"},
+            reference_utc=now,
+            target_tz=timezone.utc,
+        )
+        self.assertGreater(datetime.fromisoformat(caught_up), now)
+
+        # 3. 9999-12-31 无法表示下一日抛出 OverflowError/ValueError，UI 完成路径安全回滚
+        with self.assertRaises((OverflowError, ValueError)):
+            calculate_next_due_utc(
+                "9999-12-31T09:00:00+00:00",
+                {"frequency": "daily", "interval": 1},
+                reference_utc=datetime(9999, 12, 31, 8, 0, tzinfo=timezone.utc),
+                target_tz=timezone.utc,
+            )
+
+        # 4. 月末 31 日规则在 2 月 28 日卡片上仅修改文案时，不退化为 28 日
+        feb28_task = {
+            "id": 91,
+            "text": "月末对账",
+            "priority": "中",
+            "dueDate": "2026-02-28T09:00:00+00:00",
+            "reminderOffset": 0,
+            "recurrence": {"frequency": "monthly", "day": 31},
+            "completed": False,
+            "createdAt": "2026-01-31T09:00:00+00:00",
+        }
+        dlg = TaskEditDialog(todo_item=feb28_task)
+        self.addCleanup(dlg.deleteLater)
+        dlg.task_input.setPlainText("月末对账（已改文案）")
+        self.assertEqual(dlg.get_task_data()["recurrence"], {"frequency": "monthly", "day": 31})
+
+        # 5. 无截止时间时右键菜单显示“标记为已完成”而不是“完成本周期”
+        from PySide6.QtGui import QContextMenuEvent
+        from PySide6.QtWidgets import QMenu
+
+        no_due_task = dict(feb28_task, dueDate=None)
+        card = TodoItemWidget(no_due_task)
+        self.addCleanup(card.deleteLater)
+        labels: list[str] = []
+
+        class _FakeMenu(QMenu):
+            def exec(self, *args, **kwargs):
+                labels.extend(a.text() for a in self.actions() if a.text())
+                return None
+
+        with patch("todo_app.widgets.QMenu", _FakeMenu):
+            card.contextMenuEvent(
+                QContextMenuEvent(QContextMenuEvent.Reason.Mouse, card.rect().center(), card.rect().center())
+            )
+        self.assertIn("标记为已完成", labels)
+        self.assertNotIn("完成本周期（顺延下次）", labels)
+
+    def test_notification_complete_and_schedule_edit_undo_guard(self) -> None:
+        from datetime import timedelta
+
+        due = "2030-05-01T09:00:00+00:00"
+        todo = {
+            "id": 88,
+            "text": "晨会提醒",
+            "priority": "中",
+            "dueDate": due,
+            "reminderOffset": 0,
+            "recurrence": {"frequency": "daily", "interval": 1, "skipWeekends": False},
+            "completed": False,
+            "createdAt": "2030-04-30T09:00:00+00:00",
+            "snoozeUntil": None,
+            "notifiedForReminder": True,
+            "notifiedForDue": True,
+            "lastNotifiedAt": due,
+        }
+        window = self._create_window([todo])
+        with patch("todo_app.main_window.save_todos", return_value=True):
+            # 1. 从提醒点击完成周期任务，触发 5 秒撤销且可恢复原 dueDate
+            window._handle_notification_complete([88])
+            self.assertFalse(window.todos[0]["completed"])
+            advanced_due = window.todos[0]["dueDate"]
+            self.assertNotEqual(advanced_due, due)
+            self.assertTrue(window.undo_toast_bar.has_active_undo())
+            window.undo_toast_bar.trigger_undo()
+            self.assertEqual(window.todos[0]["dueDate"], due)
+
+            # 2. 完成顺延后再通过推迟改变调度时间，旧撤销不得覆盖新时间
+            window.toggle_complete_todo(88)
+            self.assertTrue(window.undo_toast_bar.has_active_undo())
+            window._handle_notification_snooze([88], timedelta(hours=3))
+            snoozed_due = window.todos[0]["dueDate"]
+            window.undo_toast_bar.trigger_undo()
+            self.assertEqual(window.todos[0]["dueDate"], snoozed_due)
 
 
 if __name__ == "__main__":

@@ -59,7 +59,12 @@ class BuildWorkflowGovernanceTests(unittest.TestCase):
 
     def test_build_workflow_uses_safe_concurrency_and_manual_recovery_inputs(self) -> None:
         self.assertNotIn("pip install --upgrade pip", self.build_workflow)
-        self.assertIn("build-exe-main-preview", self.build_workflow)
+        self.assertIn("build-exe-main-preview-build", self.build_workflow)
+        self.assertIn("build-exe-release-publish", self.build_workflow)
+        self.assertIn("cancel-in-progress: false", self.build_workflow)
+        self.assertIn("persist-credentials: false", self.build_workflow)
+        self.assertIn("refs/tags/{0}", self.build_workflow)
+        self.assertIn("git rev-parse HEAD", self.build_workflow)
         self.assertIn("release_tag:", self.build_workflow)
         self.assertIn("confirm_release_tag:", self.build_workflow)
         self.assertIn("publish_release:", self.build_workflow)
@@ -75,6 +80,7 @@ class BuildWorkflowGovernanceTests(unittest.TestCase):
             self.assertNotIn("${{ inputs.", block)
             self.assertNotIn("${{ github.ref_name", block)
             self.assertNotIn("${{ steps.", block)
+            self.assertNotIn("${{ needs.", block)
 
     def test_tag_validation_runs_before_pip_install(self) -> None:
         validate_idx = self.build_workflow.index("校验版本与生成构建计划")

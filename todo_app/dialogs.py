@@ -534,6 +534,8 @@ class TaskEditDialog(QDialog):
         self.time_edit: Optional[QTimeEdit] = None
         self._preserved_due_selection: Optional[tuple[str, str]] = None
         self._preserved_due_date_iso: Optional[str] = None
+        self._loaded_due_date_key: Optional[str] = None
+        self._loaded_recurrence: Optional[dict] = None
         self._theme_manager = get_theme_manager()
         self._palette: ThemeColors = self._theme_manager.current_palette
         self._theme_manager.theme_changed.connect(self._on_theme_changed)
@@ -638,6 +640,7 @@ class TaskEditDialog(QDialog):
         self.date_edit.setDisplayFormat("yyyy-MM-dd")
         self.date_edit.setCalendarPopup(True)
         self.date_edit.setMinimumDate(QDate(2000, 1, 1))
+        self.date_edit.setMaximumDate(QDate(9998, 12, 31))
         self.date_edit.setDate(QDate.currentDate())
         self.date_edit.dateChanged.connect(self._on_due_editor_changed)
         due_date_controls_layout.addWidget(self.date_edit, 1)
@@ -823,10 +826,16 @@ class TaskEditDialog(QDialog):
         self.reminder_combo.setCurrentText(
             REMINDER_SECONDS_TO_TEXT_MAP.get(self.todo_item.get("reminderOffset", 0), "到期时")
         )
+        self._loaded_due_date_key = (
+            self.date_edit.date().toString(Qt.DateFormat.ISODate)
+            if self.set_due_date_button.isChecked()
+            else None
+        )
         self._populate_recurrence_fields(self.todo_item.get("recurrence"))
 
     def _populate_recurrence_fields(self, raw_recurrence: object) -> None:
         rule = normalize_recurrence(raw_recurrence)
+        self._loaded_recurrence = dict(rule) if rule is not None else None
         if rule is None or not self.set_due_date_button.isChecked():
             self.recurrence_combo.setCurrentIndex(0)
             self._sync_recurrence_controls()
@@ -860,10 +869,17 @@ class TaskEditDialog(QDialog):
         if not isinstance(freq, str) or freq == "none":
             return None
         qdate = self.date_edit.date()
+        current_date_key = qdate.toString(Qt.DateFormat.ISODate)
+        loaded = self._loaded_recurrence
         if freq == "daily":
+            interval = (
+                int(loaded.get("interval", 1))
+                if loaded is not None and loaded.get("frequency") == "daily"
+                else 1
+            )
             return {
                 "frequency": "daily",
-                "interval": 1,
+                "interval": interval,
                 "skipWeekends": self.skip_weekends_checkbox.isChecked(),
             }
         if freq == "weekdays":
@@ -874,8 +890,27 @@ class TaskEditDialog(QDialog):
                 days = [qdate.dayOfWeek() - 1]
             return {"frequency": "weekly", "weekdays": days}
         if freq == "monthly":
+            if (
+                loaded is not None
+                and loaded.get("frequency") == "monthly"
+                and self._loaded_due_date_key == current_date_key
+                and "day" in loaded
+            ):
+                return {"frequency": "monthly", "day": int(loaded["day"])}
             return {"frequency": "monthly", "day": qdate.day()}
         if freq == "yearly":
+            if (
+                loaded is not None
+                and loaded.get("frequency") == "yearly"
+                and self._loaded_due_date_key == current_date_key
+                and "month" in loaded
+                and "day" in loaded
+            ):
+                return {
+                    "frequency": "yearly",
+                    "month": int(loaded["month"]),
+                    "day": int(loaded["day"]),
+                }
             return {"frequency": "yearly", "month": qdate.month(), "day": qdate.day()}
         return None
 
