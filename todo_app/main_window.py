@@ -990,7 +990,8 @@ class ModernTodoAppWindow(QMainWindow):
             return
         self._remove_notification_tasks(target_ids)
 
-    def _handle_notification_edit(self, todo_id: int) -> None:
+    @Slot(object)
+    def _handle_notification_edit(self, todo_id: object) -> None:
         self.activate_from_external_launch()
         self.handle_edit_request(todo_id)
 
@@ -1406,9 +1407,21 @@ class ModernTodoAppWindow(QMainWindow):
                 preview = raw_text[:18] + ("…" if len(raw_text) > 18 else "")
 
                 def _undo_complete() -> None:
-                    for idx, item in enumerate(self.todos):
+                    for item in self.todos:
                         if item.get("id") == normalized_id:
-                            self.todos[idx] = copy.deepcopy(completed_snapshot)
+                            item.update(
+                                {
+                                    "completed": bool(completed_snapshot.get("completed", False)),
+                                    "snoozeUntil": completed_snapshot.get("snoozeUntil"),
+                                    "notifiedForReminder": bool(
+                                        completed_snapshot.get("notifiedForReminder", False)
+                                    ),
+                                    "notifiedForDue": bool(
+                                        completed_snapshot.get("notifiedForDue", False)
+                                    ),
+                                    "lastNotifiedAt": completed_snapshot.get("lastNotifiedAt"),
+                                }
+                            )
                             self._persist_todos()
                             self.update_list_widget(changed_ids={normalized_id})
                             break

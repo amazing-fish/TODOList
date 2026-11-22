@@ -45,7 +45,7 @@ class NotificationDialog(QDialog):
     snooze_requested = Signal(list, object)
     ignore_requested = Signal(list)
     acknowledge_requested = Signal(object)
-    edit_requested = Signal(int)
+    edit_requested = Signal(object)
     open_main_window_requested = Signal()
 
     def __init__(self, requests: list[tuple[dict, bool]], parent=None):

@@ -606,6 +606,18 @@ class _TaskDetailsPopup(QFrame):
         )
 
 
+def _tomorrow_nine_am_snooze_delta(now_utc: Optional[datetime] = None) -> timedelta:
+    """按激活时刻的本地日历与明日真实 DST/时区偏移计算至次日 09:00 的推迟时长。"""
+
+    current_utc = now_utc or datetime.now(timezone.utc)
+    if current_utc.tzinfo is None:
+        current_utc = current_utc.replace(tzinfo=timezone.utc)
+    today_local = current_utc.astimezone().date()
+    tomorrow_local_naive = datetime.combine(today_local + timedelta(days=1), time(9, 0))
+    tomorrow_utc = tomorrow_local_naive.astimezone().astimezone(timezone.utc)
+    return max(tomorrow_utc - current_utc, timedelta(seconds=1))
+
+
 class TodoItemWidget(QFrame):
     """待办事项二维卡片：上行全宽正文，下行优先级/循环/计时元信息。"""
 
@@ -876,13 +888,14 @@ class TodoItemWidget(QFrame):
             """
         )
         is_completed = bool(self.todo_item.get("completed", False))
+        has_due_date = bool(self.todo_item.get("dueDate"))
         menu.addAction("编辑任务", self._edit_item)
         menu.addAction(
             "标记为未完成" if is_completed else "标记为已完成",
             self._toggle_complete,
         )
         snooze_menu = menu.addMenu("快速推迟")
-        snooze_menu.setEnabled(not is_completed)
+        snooze_menu.setEnabled((not is_completed) and has_due_date)
         todo_id = self.todo_item.get("id")
         snooze_menu.addAction(
             "15分钟后",
@@ -896,16 +909,10 @@ class TodoItemWidget(QFrame):
                 tid, timedelta(hours=1)
             ),
         )
-        now_local = datetime.now().astimezone()
-        tomorrow_9am = datetime.combine(
-            now_local.date() + timedelta(days=1),
-            time(9, 0),
-            tzinfo=now_local.tzinfo,
-        )
         snooze_menu.addAction(
             "明天上午9点",
-            lambda _checked=False, tid=todo_id, delta=(tomorrow_9am - now_local): self.request_quick_snooze.emit(
-                tid, delta
+            lambda _checked=False, tid=todo_id: self.request_quick_snooze.emit(
+                tid, _tomorrow_nine_am_snooze_delta()
             ),
         )
         menu.addAction(
@@ -1463,6 +1470,7 @@ class UndoToastBar(QFrame):
         self._theme_manager = get_theme_manager()
         self._palette = palette or self._theme_manager.current_palette
         self._undo_callback: Optional[Callable[[], None]] = None
+        self._pending_duration_ms: int = 0
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.dismiss)
@@ -1475,9 +1483,13 @@ class UndoToastBar(QFrame):
         layout.setContentsMargins(10, 6, 10, 6)
         layout.setSpacing(8)
 
-        self.message_label = QLabel()
+        self.message_label = _ElidedLabel("", self)
         self.message_label.setObjectName("undoToastMessageLabel")
-        self.message_label.setWordWrap(False)
+        self.message_label.setMinimumWidth(0)
+        self.message_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
         layout.addWidget(self.message_label, 1)
 
         self.undo_button = QPushButton("撤销")
@@ -1502,13 +1514,27 @@ class UndoToastBar(QFrame):
     ) -> None:
         self._timer.stop()
         self._undo_callback = undo_callback
-        self.message_label.setText(message)
+        self._pending_duration_ms = max(0, int(duration_ms))
+        self.message_label.set_full_text(message)
         self.setVisible(True)
-        if duration_ms > 0:
-            self._timer.start(duration_ms)
+        if self.isVisible() and self._pending_duration_ms > 0:
+            duration = self._pending_duration_ms
+            self._pending_duration_ms = 0
+            self._timer.start(duration)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if (
+            self._pending_duration_ms > 0
+            and self._undo_callback is not None
+            and not self._timer.isActive()
+        ):
+            duration = self._pending_duration_ms
+            self._pending_duration_ms = 0
+            self._timer.start(duration)
 
     def has_active_undo(self) -> bool:
-        return self.isVisible() and self._undo_callback is not None
+        return not self.isHidden() and self._undo_callback is not None
 
     def trigger_undo(self) -> bool:
         callback = self._undo_callback
@@ -1521,6 +1547,7 @@ class UndoToastBar(QFrame):
 
     def dismiss(self) -> None:
         self._timer.stop()
+        self._pending_duration_ms = 0
         self._undo_callback = None
         self.setVisible(False)
 

@@ -10,13 +10,13 @@ from unittest.mock import MagicMock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, QPointF, Qt  # noqa: E402
-from PySide6.QtGui import QEnterEvent, QKeyEvent  # noqa: E402
-from PySide6.QtWidgets import QApplication, QDialog, QPushButton  # noqa: E402
+from PySide6.QtGui import QContextMenuEvent, QEnterEvent, QKeyEvent  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog, QMenu, QPushButton  # noqa: E402
 
-from todo_app.dialogs import TaskEditDialog  # noqa: E402
+from todo_app.dialogs import NotificationDialog, TaskEditDialog  # noqa: E402
 from todo_app.main_window import ModernTodoAppWindow  # noqa: E402
 from todo_app.storage import StorageStatus  # noqa: E402
-from todo_app.widgets import TodoItemWidget  # noqa: E402
+from todo_app.widgets import TodoItemWidget, _tomorrow_nine_am_snooze_delta  # noqa: E402
 
 
 def _make_task(
@@ -308,6 +308,96 @@ class Phase2UxTest(unittest.TestCase):
             )
             self.assertTrue(dialog.eventFilter(dialog.task_input, ctrl_enter))
             base_accept.assert_called_once()
+
+    def test_large_task_id_survives_notification_edit_signal(self) -> None:
+        large_id = 1795305600000  # > 2**31 - 1
+        due = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        task = _make_task(large_id, "大整数毫秒 ID 编辑验证", due_date=due)
+        dialog = NotificationDialog([(task, True)])
+        self.addCleanup(dialog.close)
+        received: list[object] = []
+        dialog.edit_requested.connect(received.append)
+        dialog.edit_requested.emit(large_id)
+        self.assertEqual(received, [large_id])
+
+    def test_undo_completion_preserves_later_edits_and_defers_timer_when_hidden(self) -> None:
+        due = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        task = _make_task(101, "初始标题", due_date=due)
+        window = self._create_window([task])
+        window.hide()
+        with patch("todo_app.main_window.save_todos", return_value=True):
+            window._handle_notification_ignore([101])
+            self.assertTrue(window.undo_toast_bar.has_active_undo())
+            self.assertFalse(window.undo_toast_bar._timer.isActive())
+
+            window.show()
+            self.app.processEvents()
+            self.assertTrue(window.undo_toast_bar._timer.isActive())
+
+            window.filter_combo.setCurrentText("未完成")
+            window.toggle_complete_todo(101)
+            window.todos[0]["text"] = "撤销前的新文本"
+            self.assertTrue(window.undo_toast_bar.trigger_undo())
+            self.assertFalse(window.todos[0]["completed"])
+            self.assertEqual(window.todos[0]["text"], "撤销前的新文本")
+
+    def test_undo_toast_elides_at_320px_without_widening_window_and_context_snooze_requires_due(self) -> None:
+        window = self._create_window([])
+        window.resize(320, 600)
+        window.show()
+        self.app.processEvents()
+
+        window.undo_toast_bar.show_toast("已删除「这是一段非常长的中文待办内容预览文本超出窄窗宽度」", lambda: None)
+        self.app.processEvents()
+        self.assertLessEqual(window.width(), 320)
+        self.assertTrue(window.undo_toast_bar.undo_button.isVisible())
+        self.assertTrue(window.undo_toast_bar.close_button.isVisible())
+
+        undated_card = TodoItemWidget(_make_task(55, "无截止任务"))
+        self.addCleanup(undated_card.close)
+        snooze_enabled_states: list[bool] = []
+
+        class _FakeMenu(QMenu):
+            def exec(self, *args, **kwargs):
+                snooze_action = next(a for a in self.actions() if a.text() == "快速推迟")
+                snooze_enabled_states.append(snooze_action.isEnabled())
+                return None
+
+        with patch("todo_app.widgets.QMenu", _FakeMenu):
+            undated_card.contextMenuEvent(
+                QContextMenuEvent(QContextMenuEvent.Reason.Mouse, undated_card.rect().center(), undated_card.rect().center())
+            )
+        self.assertEqual(snooze_enabled_states, [False])
+
+    def test_tomorrow_nine_am_snooze_resolves_target_date_dst_offset(self) -> None:
+        # 从 UTC-04:00 跨入 UTC-05:00（多 1 小时）验证次日 09:00 为 14h 而非 13h
+        class _FakeLocalDt(datetime):
+            @classmethod
+            def combine(cls, d, t, tzinfo=None):
+                return _FakeLocalDt(d.year, d.month, d.day, t.hour, t.minute, t.second, t.microsecond, tzinfo=tzinfo)
+
+            def astimezone(self, tz=None):
+                if tz is not None:
+                    return super().astimezone(tz)
+                if self.tzinfo is not None:
+                    # UTC -> UTC-04:00
+                    return (self - timedelta(hours=4)).replace(tzinfo=timezone(timedelta(hours=-4)))
+                offset_hours = -4 if self.day == 1 else -5
+                return datetime(
+                    self.year,
+                    self.month,
+                    self.day,
+                    self.hour,
+                    self.minute,
+                    self.second,
+                    self.microsecond,
+                    tzinfo=timezone(timedelta(hours=offset_hours)),
+                )
+
+        now_utc = _FakeLocalDt(2026, 11, 2, 0, 0, tzinfo=timezone.utc)  # 2026-11-01 20:00 UTC-04
+        with patch("todo_app.widgets.datetime", _FakeLocalDt):
+            delta = _tomorrow_nine_am_snooze_delta(now_utc)
+        self.assertEqual(delta, timedelta(hours=14))
 
 
 if __name__ == "__main__":
