@@ -977,67 +977,89 @@ class ModernTodoAppWindow(QMainWindow):
         requested_ids = {int(todo_id) for todo_id in todo_ids}
         changed_ids: set[int] = set()
         succeeded_ids: list[int] = []
-        advanced_snapshots: list[tuple[int, dict, int]] = []
+        staged_snapshots: dict[int, tuple[dict, int]] = {}
+        advanced_ids: list[int] = []
         failed_errors: list[str] = []
         now_utc = datetime.now(timezone.utc)
         for todo in self.todos:
             tid = todo.get("id")
             if tid not in requested_ids or todo.get("completed", False):
                 continue
+            int_id = int(tid)
             pre_snapshot = copy.deepcopy(todo)
+            prev_rev = self._schedule_revisions.get(int_id, 0)
             try:
                 changed, advanced = self._complete_todo_in_place(todo, now_utc=now_utc)
             except (OverflowError, ValueError) as exc:
                 failed_errors.append(f"「{str(todo.get('text', ''))[:16]}」无法推进下一次周期：{exc}")
                 continue
             if changed:
-                int_id = int(tid)
                 changed_ids.add(int_id)
                 succeeded_ids.append(int_id)
-                rev = self._bump_schedule_revision(int_id)
+                staged_snapshots[int_id] = (pre_snapshot, prev_rev)
                 if advanced:
-                    advanced_snapshots.append((int_id, pre_snapshot, rev))
+                    advanced_ids.append(int_id)
 
-        if succeeded_ids:
-            self._remove_notification_tasks(succeeded_ids)
         if changed_ids:
-            self._persist_todos()
-            self.update_list_widget(changed_ids=changed_ids)
-        if advanced_snapshots and hasattr(self, "undo_toast_bar"):
-            if len(advanced_snapshots) == 1:
-                raw_text = str(advanced_snapshots[0][1].get("text", ""))
-                preview = raw_text[:18] + ("…" if len(raw_text) > 18 else "")
-                toast_msg = f"已完成本轮「{preview}」，已安排下一次"
-            else:
-                toast_msg = f"已完成本轮 {len(advanced_snapshots)} 条重复任务，已安排下一次"
-
-            def _undo_notification_recurrence() -> None:
-                restored_ids: set[int] = set()
-                snapshot_map = {tid: (snap, rev) for tid, snap, rev in advanced_snapshots}
-                for item in self.todos:
+            if not self._persist_todos():
+                for idx, item in enumerate(self.todos):
                     item_id = item.get("id")
-                    if not isinstance(item_id, int) or item_id not in snapshot_map:
-                        continue
-                    snap, expected_rev = snapshot_map[item_id]
-                    if self._schedule_revisions.get(item_id, 0) != expected_rev:
-                        continue
-                    item.update(
-                        {
-                            "completed": bool(snap.get("completed", False)),
-                            "dueDate": snap.get("dueDate"),
-                            "snoozeUntil": snap.get("snoozeUntil"),
-                            "notifiedForReminder": bool(snap.get("notifiedForReminder", False)),
-                            "notifiedForDue": bool(snap.get("notifiedForDue", False)),
-                            "lastNotifiedAt": snap.get("lastNotifiedAt"),
-                        }
-                    )
-                    self._bump_schedule_revision(item_id)
-                    restored_ids.add(item_id)
-                if restored_ids:
-                    self._persist_todos()
-                    self.update_list_widget(changed_ids=restored_ids)
+                    if isinstance(item_id, int) and item_id in staged_snapshots:
+                        snap, prev_rev = staged_snapshots[item_id]
+                        self.todos[idx] = snap
+                        self._schedule_revisions[item_id] = prev_rev
+                QMessageBox.warning(
+                    self,
+                    "保存失败",
+                    "无法保存任务完成状态到磁盘，所有修改已回滚。",
+                )
+                return
 
-            self.undo_toast_bar.show_toast(toast_msg, _undo_notification_recurrence)
+            committed_revs: dict[int, tuple[dict, int]] = {}
+            for int_id in succeeded_ids:
+                rev = self._bump_schedule_revision(int_id)
+                if int_id in staged_snapshots and int_id in advanced_ids:
+                    committed_revs[int_id] = (staged_snapshots[int_id][0], rev)
+
+            self._remove_notification_tasks(succeeded_ids)
+            self.update_list_widget(changed_ids=changed_ids)
+
+            if committed_revs and hasattr(self, "undo_toast_bar"):
+                if len(committed_revs) == 1:
+                    only_snap = next(iter(committed_revs.values()))[0]
+                    raw_text = str(only_snap.get("text", ""))
+                    preview = raw_text[:18] + ("…" if len(raw_text) > 18 else "")
+                    toast_msg = f"已完成本轮「{preview}」，已安排下一次"
+                else:
+                    toast_msg = f"已完成本轮 {len(committed_revs)} 条重复任务，已安排下一次"
+
+                def _undo_notification_recurrence() -> None:
+                    restored_ids: set[int] = set()
+                    for item in self.todos:
+                        item_id = item.get("id")
+                        if not isinstance(item_id, int) or item_id not in committed_revs:
+                            continue
+                        snap, expected_rev = committed_revs[item_id]
+                        if self._schedule_revisions.get(item_id, 0) != expected_rev:
+                            continue
+                        item.update(
+                            {
+                                "completed": bool(snap.get("completed", False)),
+                                "dueDate": snap.get("dueDate"),
+                                "snoozeUntil": snap.get("snoozeUntil"),
+                                "notifiedForReminder": bool(snap.get("notifiedForReminder", False)),
+                                "notifiedForDue": bool(snap.get("notifiedForDue", False)),
+                                "lastNotifiedAt": snap.get("lastNotifiedAt"),
+                            }
+                        )
+                        self._bump_schedule_revision(item_id)
+                        restored_ids.add(item_id)
+                    if restored_ids:
+                        self._persist_todos()
+                        self.update_list_widget(changed_ids=restored_ids)
+
+                self.undo_toast_bar.show_toast(toast_msg, _undo_notification_recurrence)
+
         if failed_errors:
             QMessageBox.warning(self, "重复任务推进失败", "\n".join(failed_errors))
 
@@ -2379,11 +2401,14 @@ class ModernTodoAppWindow(QMainWindow):
         if due_date is not None:
             if not isinstance(due_date, str) or self._parse_iso_datetime(due_date) is None:
                 raise ValueError(f"第 {index + 1} 条任务的 dueDate 不是有效的 ISO 日期时间。")
-        reminder_offset = raw_item.get("reminderOffset")
-        if reminder_offset is not None and (
-            isinstance(reminder_offset, bool) or not isinstance(reminder_offset, int)
-        ):
-            raise ValueError(f"第 {index + 1} 条任务的 reminderOffset 必须为整数。")
+        if "reminderOffset" in raw_item:
+            reminder_offset = raw_item.get("reminderOffset")
+            if isinstance(reminder_offset, bool) or not isinstance(reminder_offset, int):
+                raise ValueError(f"第 {index + 1} 条任务的 reminderOffset 必须为整数。")
+        snooze_until = raw_item.get("snoozeUntil")
+        if snooze_until is not None:
+            if not isinstance(snooze_until, str) or self._parse_iso_datetime(snooze_until) is None:
+                raise ValueError(f"第 {index + 1} 条任务的 snoozeUntil 必须为有效的 ISO 日期时间或 null。")
 
     def clear_completed_todos(self, *, defer_undo_toast: bool = False) -> int:
         if self._is_storage_read_only():
@@ -2488,6 +2513,10 @@ class ModernTodoAppWindow(QMainWindow):
         next_id = max(existing_ids, default=0) + 1
         imported_ids: set[int] = set()
         for item in normalized:
+            for ts_field in ("dueDate", "snoozeUntil"):
+                parsed_ts = self._parse_iso_datetime(item.get(ts_field))
+                if parsed_ts is not None:
+                    item[ts_field] = parsed_ts.isoformat()
             candidate_id = item.get("id")
             if not isinstance(candidate_id, int) or candidate_id <= 0 or candidate_id in existing_ids:
                 while next_id in existing_ids:
