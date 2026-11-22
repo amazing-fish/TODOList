@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,68 @@ from .paths import DATA_FILE
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class StorageStatus:
+    """最近一次待办存储读写操作的健康状态。"""
+
+    healthy: bool
+    read_only: bool
+    source: Path
+    message: str
+    data_file: Path
+    backup_file: Path
+
+
+_last_load_status: StorageStatus | None = None
+_last_save_status: StorageStatus | None = None
+
+
+def _build_status(
+    *,
+    healthy: bool,
+    read_only: bool,
+    source: Path,
+    message: str,
+    data_file: Path,
+) -> StorageStatus:
+    return StorageStatus(
+        healthy=healthy,
+        read_only=read_only,
+        source=source,
+        message=message,
+        data_file=data_file,
+        backup_file=_backup_path(data_file),
+    )
+
+
+def get_last_load_status() -> StorageStatus:
+    """返回最近一次 load_todos 的状态快照。"""
+
+    if _last_load_status is None:
+        return _build_status(
+            healthy=True,
+            read_only=False,
+            source=DATA_FILE,
+            message="",
+            data_file=DATA_FILE,
+        )
+    return _last_load_status
+
+
+def get_last_save_status() -> StorageStatus:
+    """返回最近一次 save_todos 的状态快照。"""
+
+    if _last_save_status is None:
+        return _build_status(
+            healthy=True,
+            read_only=False,
+            source=DATA_FILE,
+            message="",
+            data_file=DATA_FILE,
+        )
+    return _last_save_status
 
 
 class _InvalidTodoFile(ValueError):
@@ -117,12 +180,27 @@ def _migrate_and_validate_todo_item(todo_dict: dict[str, Any], current_index: in
 
 
 def load_todos() -> list[dict[str, Any]]:
+    global _last_load_status
     if not DATA_FILE.exists():
+        _last_load_status = _build_status(
+            healthy=True,
+            read_only=False,
+            source=DATA_FILE,
+            message="",
+            data_file=DATA_FILE,
+        )
         return []
 
     source = DATA_FILE
     try:
         todos_from_file = _read_todo_list(DATA_FILE)
+        _last_load_status = _build_status(
+            healthy=True,
+            read_only=False,
+            source=DATA_FILE,
+            message="",
+            data_file=DATA_FILE,
+        )
     except Exception as exc:  # noqa: BLE001
         backup = _backup_path(DATA_FILE)
         logger.warning(
@@ -134,10 +212,30 @@ def load_todos() -> list[dict[str, Any]]:
         try:
             todos_from_file = _read_todo_list(backup)
             source = backup
+            _last_load_status = _build_status(
+                healthy=False,
+                read_only=True,
+                source=backup,
+                message=(
+                    f"主数据文件 {DATA_FILE.name} 损坏，当前已从备份只读恢复；"
+                    "为防覆盖原文件，新修改暂无法保存。"
+                ),
+                data_file=DATA_FILE,
+            )
         except Exception as backup_exc:  # noqa: BLE001
             logger.warning(
                 "主数据文件与备份均不可用，将返回空列表；主文件会保持原样: %s",
                 backup_exc,
+            )
+            _last_load_status = _build_status(
+                healthy=False,
+                read_only=True,
+                source=DATA_FILE,
+                message=(
+                    f"主数据文件 {DATA_FILE.name} 与备份均不可用，当前处于只读保护模式，"
+                    "新修改暂无法保存。"
+                ),
+                data_file=DATA_FILE,
             )
             return []
 
@@ -160,7 +258,8 @@ def load_todos() -> list[dict[str, Any]]:
     return migrated
 
 
-def save_todos(todos_list: list[dict[str, Any]]) -> None:
+def save_todos(todos_list: list[dict[str, Any]]) -> bool:
+    global _last_save_status
     data_temp: Path | None = None
     backup_temp: Path | None = None
     try:
@@ -178,7 +277,17 @@ def save_todos(todos_list: list[dict[str, Any]]) -> None:
                     DATA_FILE,
                     exc,
                 )
-                return
+                _last_save_status = _build_status(
+                    healthy=False,
+                    read_only=True,
+                    source=_backup_path(DATA_FILE),
+                    message=(
+                        f"主数据文件 {DATA_FILE.name} 损坏，已拒绝覆盖；"
+                        "请先备份并隔离损坏文件以恢复写入。"
+                    ),
+                    data_file=DATA_FILE,
+                )
+                return False
 
             backup = _backup_path(DATA_FILE)
             backup_temp = _write_fsynced_temp(backup, current_content)
@@ -187,15 +296,97 @@ def save_todos(todos_list: list[dict[str, Any]]) -> None:
 
         os.replace(data_temp, DATA_FILE)
         data_temp = None
+        _last_save_status = _build_status(
+            healthy=True,
+            read_only=False,
+            source=DATA_FILE,
+            message="",
+            data_file=DATA_FILE,
+        )
+        return True
     except Exception as exc:  # noqa: BLE001
         logger.exception("保存数据时出错，原主文件保持不变: %s", exc)
+        _last_save_status = _build_status(
+            healthy=False,
+            read_only=False,
+            source=DATA_FILE,
+            message=f"保存数据失败：{exc}",
+            data_file=DATA_FILE,
+        )
+        return False
     finally:
         _cleanup_temp(backup_temp)
         _cleanup_temp(data_temp)
 
 
+def quarantine_damaged_main_file(
+    todos_list: list[dict[str, Any]],
+    *,
+    data_file: Path | None = None,
+) -> Path:
+    """将损坏的主文件隔离备份后重新写入有效任务数据。"""
+
+    global _last_load_status, _last_save_status
+    target = data_file or DATA_FILE
+    if not target.exists():
+        raise FileNotFoundError(f"主数据文件不存在，无需隔离: {target}")
+
+    try:
+        _read_todo_list(target)
+    except Exception:
+        pass
+    else:
+        raise ValueError(f"主数据文件 {target} 当前可读，拒绝按损坏文件隔离")
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    quarantine_path = target.with_name(f"{target.name}.corrupt.{timestamp}")
+    suffix = 1
+    while quarantine_path.exists():
+        quarantine_path = target.with_name(f"{target.name}.corrupt.{timestamp}.{suffix}")
+        suffix += 1
+
+    os.replace(target, quarantine_path)
+    logger.warning("已将损坏主文件隔离到 %s", quarantine_path)
+    if target == DATA_FILE:
+        if not save_todos(todos_list):
+            try:
+                os.replace(quarantine_path, target)
+                logger.warning("写入新数据失败，已回滚恢复原主文件 %s", target)
+                _last_save_status = _build_status(
+                    healthy=False,
+                    read_only=True,
+                    source=_backup_path(target),
+                    message=(
+                        f"主数据文件 {target.name} 隔离后写入失败，已保留原损坏文件；"
+                        "请检查目录权限后重试。"
+                    ),
+                    data_file=target,
+                )
+                _last_load_status = _last_save_status
+            except OSError as rollback_exc:
+                logger.exception("回滚损坏主文件 %s 失败: %s", quarantine_path, rollback_exc)
+                _last_save_status = _build_status(
+                    healthy=False,
+                    read_only=False,
+                    source=quarantine_path,
+                    message=(
+                        f"损坏文件已备份至 {quarantine_path.name}，但写入新数据失败；"
+                        "请检查目录权限后重新保存。"
+                    ),
+                    data_file=target,
+                )
+                _last_load_status = _last_save_status
+            raise OSError("隔离损坏文件后写入新数据失败")
+        _last_load_status = _last_save_status
+    return quarantine_path
+
+
 __all__ = [
+    "StorageStatus",
+    "get_last_load_status",
+    "get_last_save_status",
     "load_todos",
+    "quarantine_damaged_main_file",
     "save_todos",
     "REMINDER_SECONDS_TO_TEXT_MAP",
 ]

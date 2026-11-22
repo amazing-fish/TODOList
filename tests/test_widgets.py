@@ -1536,6 +1536,13 @@ class TodoListCardIntegrationTest(unittest.TestCase):
                 "snoozeUntil": None,
             }
             todos = [{**todo, "id": index + 1} for index in range(todo_count)]
+        from unittest.mock import MagicMock
+
+        fake_settings = MagicMock()
+        fake_settings.value.return_value = None
+        settings_patcher = patch("todo_app.main_window.QSettings", return_value=fake_settings)
+        settings_patcher.start()
+        self.addCleanup(settings_patcher.stop)
         load_patcher = patch("todo_app.main_window.load_todos", return_value=todos)
         load_patcher.start()
         self.addCleanup(load_patcher.stop)

@@ -1,10 +1,11 @@
 """应用程序入口函数。"""
 from __future__ import annotations
 
+import logging
 import sys
 
 from PySide6.QtCore import QMessageLogContext, QtMsgType, qInstallMessageHandler
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from .constants import (
     APP_ICON_PATH,
@@ -13,7 +14,10 @@ from .constants import (
     SETTINGS_ORGANIZATION,
 )
 from .fonts import apply_application_font
+from .logging_config import configure_logging
 from .main_window import ModernTodoAppWindow
+from .paths import RUNTIME_STORAGE_DIR
+from .single_instance import SingleInstanceGuard, build_instance_server_name
 from .utils import get_icon
 
 
@@ -33,10 +37,12 @@ def _filter_qt_messages(mode: QtMsgType, context: QMessageLogContext, message: s
 
 
 _original_qt_message_handler = qInstallMessageHandler(_filter_qt_messages)
+logger = logging.getLogger(__name__)
 
 
 def run() -> None:
     """启动桌面应用。"""
+    configure_logging()
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
@@ -45,13 +51,33 @@ def run() -> None:
     app.setQuitOnLastWindowClosed(False)
     apply_application_font()
 
-    main_window = ModernTodoAppWindow()
-    if main_window.isMinimized() or main_window.isHidden():
-        main_window.showNormal()
-    main_window.raise_()
-    main_window.activateWindow()
+    guard = SingleInstanceGuard(
+        build_instance_server_name(RUNTIME_STORAGE_DIR),
+        lock_dir=RUNTIME_STORAGE_DIR,
+    )
+    if not guard.try_acquire():
+        acquisition_error = getattr(guard, "acquisition_error", None)
+        if isinstance(acquisition_error, str) and acquisition_error:
+            logger.error("单实例互斥初始化失败，中止启动: %s", acquisition_error)
+            QMessageBox.critical(
+                None,
+                APP_NAME,
+                f"无法建立单实例互斥保护，为防止多开损坏待办数据已中止启动：\n{acquisition_error}",
+            )
+            sys.exit(1)
+        sys.exit(0)
 
-    sys.exit(app.exec())
+    try:
+        main_window = ModernTodoAppWindow()
+        guard.activate_requested.connect(main_window.activate_from_external_launch)
+        if main_window.isMinimized() or main_window.isHidden():
+            main_window.showNormal()
+        main_window.raise_()
+        main_window.activateWindow()
+
+        sys.exit(app.exec())
+    finally:
+        guard.release()
 
 
 __all__ = ["run"]

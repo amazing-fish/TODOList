@@ -267,11 +267,71 @@ class StorageTest(unittest.TestCase):
         self.data_file.write_text(damaged_content, encoding="utf-8")
 
         with self.assertLogs("todo_app.storage", level="ERROR"):
-            storage.save_todos([_todo(1, "不会覆盖损坏文件")])
+            saved = storage.save_todos([_todo(1, "不会覆盖损坏文件")])
 
+        self.assertFalse(saved)
         self.assertEqual(self.data_file.read_text(encoding="utf-8"), damaged_content)
         self.assertFalse(self.backup_file.exists())
         self.assertEqual(self._temp_files(), [])
+
+    def test_damaged_main_shows_warning_banner_and_quarantine_restores_writability(self) -> None:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtCore import QEvent
+        from PySide6.QtWidgets import QApplication, QMessageBox
+        from todo_app.main_window import ModernTodoAppWindow
+
+        damaged_content = '{"unfinished":'
+        self.data_file.write_text(damaged_content, encoding="utf-8")
+        self._write_json(self.backup_file, [_todo(1, "从备份恢复的任务")])
+
+        app = QApplication.instance() or QApplication([])
+        with (
+            patch("todo_app.main_window.QSettings", return_value=MagicMock()),
+            self.assertLogs("todo_app.storage", level="WARNING"),
+        ):
+            window = ModernTodoAppWindow()
+        window.master_timer.stop()
+        try:
+            self.assertFalse(window.storage_warning_banner.isHidden())
+            self.assertIn("损坏", window.storage_warning_label.text())
+
+            with (
+                patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes),
+                patch.object(QMessageBox, "information"),
+            ):
+                window._recover_damaged_storage()
+
+            self.assertTrue(window.storage_warning_banner.isHidden())
+            quarantined = list(self.data_file.parent.glob("todos.json.corrupt.*"))
+            self.assertEqual(len(quarantined), 1)
+            self.assertEqual(quarantined[0].read_text(encoding="utf-8"), damaged_content)
+            self.assertEqual(storage.load_todos()[0]["text"], "从备份恢复的任务")
+            self.assertTrue(storage.get_last_save_status().healthy)
+        finally:
+            window._quitting_app = True
+            window.tray_icon.hide()
+            window.close()
+            app.processEvents()
+            window.deleteLater()
+            app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+            app.processEvents()
+
+    def test_quarantine_rolls_back_damaged_main_when_save_fails(self) -> None:
+        damaged_content = '{"unfinished":'
+        self.data_file.write_text(damaged_content, encoding="utf-8")
+        recovered = [_todo(1, "备份任务")]
+        self._write_json(self.backup_file, recovered)
+
+        with (
+            patch("todo_app.storage.save_todos", return_value=False),
+            self.assertRaisesRegex(OSError, "写入新数据失败"),
+        ):
+            storage.quarantine_damaged_main_file(recovered)
+
+        self.assertEqual(self.data_file.read_text(encoding="utf-8"), damaged_content)
+        self.assertEqual(list(self.data_file.parent.glob("todos.json.corrupt.*")), [])
+        self.assertFalse(storage.get_last_save_status().healthy)
+        self.assertTrue(storage.get_last_save_status().read_only)
 
 
 if __name__ == "__main__":

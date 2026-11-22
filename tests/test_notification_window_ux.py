@@ -326,6 +326,56 @@ class NotificationWindowUxTest(unittest.TestCase):
             color = image.pixelColor(round(gap.x() * scale), round(gap.y() * scale))
             self.assertEqual(color.name(), manager.current_palette.background.lower())
 
+    def test_hidden_window_notification_does_not_unhide_main_or_steal_focus(self) -> None:
+        self.window.hide()
+        self.app.processEvents()
+        task = make_todo(10)
+        self.window.todos = [task]
+
+        self.window.tick_update()
+        self.app.processEvents()
+
+        self.assertTrue(self.window.isHidden())
+        self.window._force_window_foreground.assert_not_called()
+        dialog = self.window._notification_dialog
+        self.assertIsNotNone(dialog)
+        self.assertTrue(dialog.isVisible())
+
+        dialog.open_main_window_requested.emit()
+        self.app.processEvents()
+        self.assertTrue(self.window.isVisible())
+
+    def test_early_reminder_snooze_then_fires_due_notification_at_original_due(self) -> None:
+        base_now = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
+        original_due = datetime(2026, 9, 1, 11, 0, tzinfo=timezone.utc)
+        task = make_todo(20)
+        task["dueDate"] = original_due.isoformat()
+        task["reminderOffset"] = 3600
+        self.window.todos = [task]
+
+        with patch("todo_app.main_window.datetime") as dt_mock:
+            dt_mock.now.return_value = base_now
+            dt_mock.fromisoformat.side_effect = datetime.fromisoformat
+            self.window.tick_update()
+
+        self.assertEqual(self.window._notification_dialog.task_ids(), [20])
+        self.assertFalse(self.window._notification_dialog._task_rows[20]["is_due"])
+
+        with patch("todo_app.scheduling.datetime") as sched_dt:
+            sched_dt.now.return_value = base_now
+            sched_dt.fromisoformat.side_effect = datetime.fromisoformat
+            self.window._handle_notification_snooze([20], timedelta(minutes=15))
+
+        self.assertEqual(task["dueDate"], original_due.isoformat())
+
+        with patch("todo_app.main_window.datetime") as dt_mock:
+            dt_mock.now.return_value = original_due + timedelta(seconds=1)
+            dt_mock.fromisoformat.side_effect = datetime.fromisoformat
+            self.window.tick_update()
+
+        self.assertEqual(self.window._notification_dialog.task_ids(), [20])
+        self.assertTrue(self.window._notification_dialog._task_rows[20]["is_due"])
+
 
 if __name__ == "__main__":
     unittest.main()

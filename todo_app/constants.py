@@ -48,7 +48,7 @@ class ThemeColors:
 
 # --- 基本信息 ---
 APP_NAME = "桌面待办事项"
-APP_VERSION = "2.1.8"
+APP_VERSION = "2.2.0"
 
 # QSettings 命名空间属于持久化兼容契约，不应随用户可见名称变化。
 SETTINGS_ORGANIZATION = "MyProductiveApp"
@@ -65,8 +65,8 @@ SNOOZE_ICON_PATH = "assets/icons/snooze_icon.svg"
 APP_FONT_FAMILY = "HarmonyOS Sans SC"
 APP_FONT_PATH = "assets/fonts/HarmonyOS_Sans_SC_Regular.ttf"
 APP_FONT_LICENSE_PATH = "assets/fonts/LICENSE_HarmonyOS_Sans.txt"
-REMINDER_SOUND_PATH = "reminder.wav"
-DUE_SOUND_PATH = "due.wav"
+REMINDER_SOUND_PATH = "assets/sounds/reminder.wav"
+DUE_SOUND_PATH = "assets/sounds/due.wav"
 
 # --- 颜色 ---
 LIGHT_THEME_COLORS = ThemeColors(
