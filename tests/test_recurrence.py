@@ -350,6 +350,138 @@ class RecurrenceGuiTests(unittest.TestCase):
             )
         self.assertEqual(next_iso, "2026-03-09T06:30:00+00:00")
 
+        # 连续两次跨 DST 缺口完成：首次完成把 March 8 存为 03:30 (-04) 并固化 anchorTime="02:30"，
+        # 次日再完成时仍基于 anchorTime 还原到 March 9 02:30 (-04, 即 06:30 UTC)
+        gap_todo = {
+            "id": 92,
+            "text": "跨DST任务",
+            "dueDate": "2026-03-07T07:30:00+00:00",
+            "recurrence": {"frequency": "daily", "interval": 1, "skipWeekends": False},
+        }
+        with patch("todo_app.scheduling.datetime", _SpringGapDatetime):
+            step1 = build_recurrence_completion_fields(
+                gap_todo,
+                now_utc=_SpringGapDatetime(2026, 3, 7, 7, 30, tzinfo=timezone.utc),
+                target_tz=None,
+            )
+            self.assertEqual(step1["dueDate"], "2026-03-08T07:30:00+00:00")
+            self.assertEqual(step1["recurrence"].get("anchorTime"), "02:30")
+
+            saved_gap_todo = dict(gap_todo, **step1)
+            step2 = build_recurrence_completion_fields(
+                saved_gap_todo,
+                now_utc=_SpringGapDatetime(2026, 3, 8, 7, 30, tzinfo=timezone.utc),
+                target_tz=None,
+            )
+        self.assertEqual(step2["dueDate"], "2026-03-09T06:30:00+00:00")
+
+    def test_daily_skip_weekends_interval_gt_one_catches_up_decades(self) -> None:
+        old_monday = datetime(2000, 1, 3, 9, 0, tzinfo=timezone.utc)
+        now_2030 = datetime(2030, 1, 1, 12, 0, tzinfo=timezone.utc)
+        caught_up = calculate_next_due_utc(
+            old_monday.isoformat(),
+            {"frequency": "daily", "interval": 2, "skipWeekends": True},
+            reference_utc=now_2030,
+            target_tz=timezone.utc,
+        )
+        caught_dt = datetime.fromisoformat(caught_up)
+        self.assertGreater(caught_dt, now_2030)
+        self.assertLess(caught_dt.weekday(), 5)
+        self.assertEqual(caught_up, "2030-01-02T09:00:00+00:00")
+
+    def test_edit_dialog_preserves_implicit_empty_weekly_and_updates_anchor_time(self) -> None:
+        from PySide6.QtCore import QTime
+
+        todo = {
+            "id": 93,
+            "text": "隐式每周任务",
+            "priority": "中",
+            "dueDate": "2026-04-24T10:00:00+00:00",
+            "reminderOffset": 0,
+            "recurrence": {"frequency": "weekly", "weekdays": [], "anchorTime": "02:30"},
+            "completed": False,
+            "createdAt": "2026-04-20T08:00:00+00:00",
+        }
+        dlg = TaskEditDialog(todo_item=todo)
+        self.addCleanup(dlg.deleteLater)
+        dlg.task_input.setPlainText("隐式每周任务（改标题）")
+        data = dlg.get_task_data()
+        self.assertEqual(data["recurrence"], {"frequency": "weekly", "weekdays": [], "anchorTime": "02:30"})
+
+        dlg.time_edit.setTime(QTime(4, 15))
+        edited_data = dlg.get_task_data()
+        self.assertEqual(edited_data["recurrence"]["anchorTime"], "04:15")
+
+    def test_persist_failure_rollback_across_notification_card_and_retryable_undo(self) -> None:
+        due = "2030-05-01T09:00:00+00:00"
+        todo = {
+            "id": 94,
+            "text": "持久化回滚闭环",
+            "priority": "中",
+            "dueDate": due,
+            "reminderOffset": 0,
+            "recurrence": {"frequency": "daily", "interval": 1, "skipWeekends": False},
+            "completed": False,
+            "createdAt": "2030-04-30T09:00:00+00:00",
+            "snoozeUntil": None,
+            "notifiedForReminder": True,
+            "notifiedForDue": True,
+            "lastNotifiedAt": due,
+        }
+        window = self._create_window([todo])
+
+        # 1. 通知弹窗完成但持久化失败 -> 敞开的通知行应立即还原为原截止时间
+        with (
+            patch("todo_app.main_window.play_sound_effect"),
+            patch.object(window, "_persist_todos", return_value=False),
+            patch("todo_app.main_window.QMessageBox.warning") as warn_mock,
+        ):
+            window._show_notification_batch([(window.todos[0], True)])
+            before_detail = window._notification_dialog._task_rows[94]["detail_label"].text()
+            window._handle_notification_complete([94])
+            after_detail = window._notification_dialog._task_rows[94]["detail_label"].text()
+            self.assertEqual(window.todos[0]["dueDate"], due)
+            self.assertEqual(after_detail, before_detail)
+            warn_mock.assert_called_once()
+
+        # 2. 卡片 toggle_complete / finish_recurrence 持久化失败 -> 回滚状态、保留提醒、不弹 Toast
+        with (
+            patch.object(window, "_persist_todos", return_value=False),
+            patch("todo_app.main_window.QMessageBox.warning") as warn_mock,
+        ):
+            window.toggle_complete_todo(94)
+            self.assertEqual(window.todos[0]["dueDate"], due)
+            self.assertIn(94, window._notification_dialog._task_rows)
+            self.assertFalse(window.undo_toast_bar.has_active_undo())
+
+            window.handle_finish_recurrence_request(94)
+            self.assertFalse(window.todos[0]["completed"])
+            self.assertIsNotNone(window.todos[0]["recurrence"])
+            self.assertIn(94, window._notification_dialog._task_rows)
+            self.assertFalse(window.undo_toast_bar.has_active_undo())
+            self.assertEqual(warn_mock.call_count, 2)
+
+        # 3. Undo 期间持久化失败 -> 回滚撤销并保持 Undo Toast 可重试，恢复后再次点击撤销成功
+        with patch.object(window, "_persist_todos", return_value=True):
+            window.toggle_complete_todo(94)
+            advanced_due = window.todos[0]["dueDate"]
+            self.assertNotEqual(advanced_due, due)
+            self.assertTrue(window.undo_toast_bar.has_active_undo())
+
+        with (
+            patch.object(window, "_persist_todos", return_value=False),
+            patch("todo_app.main_window.QMessageBox.warning") as warn_mock,
+        ):
+            self.assertFalse(window.undo_toast_bar.trigger_undo())
+            self.assertEqual(window.todos[0]["dueDate"], advanced_due)
+            self.assertTrue(window.undo_toast_bar.has_active_undo())
+            warn_mock.assert_called_once()
+
+        with patch.object(window, "_persist_todos", return_value=True):
+            self.assertTrue(window.undo_toast_bar.trigger_undo())
+            self.assertEqual(window.todos[0]["dueDate"], due)
+            self.assertFalse(window.undo_toast_bar.has_active_undo())
+
 
 if __name__ == "__main__":
     unittest.main()

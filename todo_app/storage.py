@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import tempfile
 from dataclasses import dataclass
@@ -136,20 +137,38 @@ def _migrate_and_validate_todo_item(todo_dict: dict[str, Any], current_index: in
     is_new_id_needed = False
     original_id_for_warning = item.get("id", "未提供")
 
-    if "id" not in item:
+    if "id" not in item or isinstance(item.get("id"), bool):
+        if "id" in item:
+            logger.warning(
+                "任务 %r 的 ID %r 无效，将重新生成",
+                item.get("text", "未知"),
+                original_id_for_warning,
+            )
         is_new_id_needed = True
-    elif not isinstance(item.get("id"), (int, float)):
+    elif isinstance(item.get("id"), float):
+        raw_float = item["id"]
+        if math.isfinite(raw_float):
+            item["id"] = int(raw_float)
+        else:
+            logger.warning(
+                "任务 %r 的 ID %r 非有限数字，将重新生成",
+                item.get("text", "未知"),
+                original_id_for_warning,
+            )
+            is_new_id_needed = True
+    elif not isinstance(item.get("id"), int):
         try:
-            item["id"] = int(float(str(item["id"])))
-        except (ValueError, TypeError):
+            parsed_float = float(str(item["id"]))
+            if not math.isfinite(parsed_float):
+                raise ValueError("non-finite id")
+            item["id"] = int(parsed_float)
+        except (ValueError, TypeError, OverflowError):
             logger.warning(
                 "任务 %r 的 ID %r 无效，将重新生成",
                 item.get("text", "未知"),
                 original_id_for_warning,
             )
             is_new_id_needed = True
-    elif isinstance(item.get("id"), float):
-        item["id"] = int(item["id"])
 
     processed_ids = [it["id"] for it in processed if isinstance(it.get("id"), int)]
     existing_ids = set(processed_ids)

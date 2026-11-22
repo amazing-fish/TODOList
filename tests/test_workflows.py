@@ -54,11 +54,14 @@ class BuildWorkflowGovernanceTests(unittest.TestCase):
             "pefile==2024.8.26",
             "pyinstaller-hooks-contrib==2026.10",
             "pywin32-ctypes==0.2.3",
+            "setuptools==65.5.0",
         ):
             self.assertIn(expected_pin, self.requirements_dev)
 
     def test_build_workflow_uses_safe_concurrency_and_manual_recovery_inputs(self) -> None:
         self.assertNotIn("pip install --upgrade pip", self.build_workflow)
+        self.assertNotIn("gh release view", self.build_workflow)
+        self.assertIn("gh release list --repo", self.build_workflow)
         self.assertIn("build-exe-main-preview-build", self.build_workflow)
         self.assertIn("build-exe-release-publish", self.build_workflow)
         self.assertIn("cancel-in-progress: false", self.build_workflow)

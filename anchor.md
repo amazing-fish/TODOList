@@ -56,7 +56,7 @@
   - `completed`（bool）、`priority`（"高"|"中"|"低"）、`dueDate`（ISO8601 str 或 `None`）。
   - `reminderOffset`（int 秒，-1 表示不提醒）、`snoozeUntil`、`lastNotifiedAt`（ISO8601 str 或 `None`）。
   - `notifiedForReminder`、`notifiedForDue`（bool）用于提醒状态去重。
-  - `recurrence`（dict 或 `None`）重复规则，经 `normalize_recurrence` 规范化，按频率类型包含 `frequency`（`"daily" | "weekdays" | "weekly" | "monthly" | "yearly"`）、`interval`（daily 正整数）、`skipWeekends`（daily bool）、`weekdays`（weekly `0..6` 升序去重列表）、`day`（monthly/yearly 1..31）与 `month`（yearly 1..12）；旧数据缺失该键时保持原样，读取端等价视作 `None`。
+  - `recurrence`（dict 或 `None`）重复规则，经 `normalize_recurrence` 规范化，按频率类型包含 `frequency`（`"daily" | "weekdays" | "weekly" | "monthly" | "yearly"`）、`interval`（daily 正整数）、`skipWeekends`（daily bool）、`weekdays`（weekly `0..6` 升序去重列表）、`day`（monthly/yearly 1..31）、`month`（yearly 1..12）与可选本地墙钟锚点 `anchorTime`（`"HH:MM"` 等，跨 DST 缺口顺延时防止后续周期漂移）；旧数据缺失该键时保持原样，读取端等价视作 `None`。
 - 修改字段或新增元数据时：同步更新 `storage.py` 的迁移逻辑、`TaskEditDialog` 的表单、`TodoItemWidget` 的展示，以及锚点此处的说明。
 
 ## 资源约束
@@ -93,7 +93,7 @@
 - **周期任务闭环**：勾选或通知完成周期任务时不置为已完成，而是按本地日历推进 `dueDate` 至下一有效时刻（跳过周末、指定周几或月末钳位）并清空 `snoozeUntil` 与通知标记；同时提供 5 秒 Undo Toast 回滚，并在卡片右键菜单保留“结束重复并完成”。
 
 ## 最近约定变更
-- 2026-11-22：feature，完成 Phase 3 工作流、周期任务、设置中心与构建发布韧性（Refs `#101` `#95` `#79` `#80`）：新增 `recurrence` 字段与周期推进/月末对齐/结束重复逻辑；新增 `SettingsDialog`、主题模式覆盖、`autostart.py` Windows 注册表开机自启、提示音开关、手动/1 小时勿扰及托盘入口、清理已完成与 JSON 导入/导出（5 秒撤销与只读保护）；`requirements-dev.txt` 锁定 PyInstaller 间接依赖，重构 `build-exe.yml` 隔离并发与缓存并支持带二次确认的手动补发与摘要输出，版本按 feature 规则递增至 `v3.1.0`。
+- 2026-11-22：feature，完成 Phase 3 工作流、周期任务、设置中心与构建发布韧性（Refs `#101` `#95` `#79` `#80`）：新增 `recurrence` 字段（含可选 `anchorTime` 墙钟锚点防 DST 缺口跨次漂移）与周期推进/月末对齐/结束重复逻辑；新增 `SettingsDialog`、主题模式覆盖、`autostart.py` Windows 注册表开机自启、提示音开关、手动/1 小时勿扰及托盘入口、清理已完成与 JSON 导入/导出（5 秒撤销、硬链接防覆盖与只读保护）；`requirements-dev.txt` 锁定 PyInstaller 间接依赖（含 `setuptools==65.5.0`），重构 `build-exe.yml` 隔离并发与缓存并支持带二次确认的手动补发与摘要输出，版本按 feature 规则递增至 `v3.1.0`。
 - 2026-11-22：refactor，推进 Phase 2 信息架构与交互重构：卡片改为二维双行布局并支持双击/右键菜单与可选中悬停详情浮层；主窗口新增顶栏动态统计、Pin 置顶、内联快录栏、实时搜索与一键重置、完整快捷键及底部 5 秒 Undo Toast；编辑表单增加时间预设与 `Ctrl+Enter` 保存并取消过去时间强拦截；通知弹窗拆分为中性“知道了”（保留 `dueDate`）与“编辑”，版本按 refactor 规则升级至 `v3.0.0`。
 - 2026-11-22：feature，新增单实例锁与外部唤醒、数据目录轮转日志、损坏只读顶部警告横幅与安全隔离恢复；修复“截止日期(远->近)”排序与已完成沉底，“今天到期”纳入逾期并新增“已逾期”及筛选排序持久化；提前提醒推迟保留原截止时间；补齐内置提醒 WAV 音效并将提醒窗改为非抢焦置顶且解耦主窗口强制唤起，版本更新至 `v2.2.0`。
 - 2026-09-07：bugfix，普通 Tick 只刷新与视口相交的卡片，隐藏/最小化窗口跳过计时呈现；滚动、布局和窗口恢复立即刷新可见计时，保留全部任务提醒扫描与差量数据协调，版本更新至 `v2.1.8`。

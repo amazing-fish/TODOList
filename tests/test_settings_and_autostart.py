@@ -381,6 +381,122 @@ class SettingsAndWindowWorkflowTests(unittest.TestCase):
         self.assertGreater(window.pin_button.width(), 20)
         self.assertEqual(window.add_button.width(), 36)
 
+    def test_dnd_keeps_retained_notification_hidden_and_restores_on_expiry(self) -> None:
+        due = "2030-05-01T09:00:00+00:00"
+        todo = {
+            "id": 501,
+            "text": "勿扰保留提醒批",
+            "priority": "高",
+            "dueDate": due,
+            "reminderOffset": 0,
+            "completed": False,
+            "createdAt": "2030-04-30T09:00:00+00:00",
+            "snoozeUntil": None,
+            "notifiedForReminder": True,
+            "notifiedForDue": True,
+            "lastNotifiedAt": due,
+        }
+        window = self._create_window([todo])
+        with (
+            patch("todo_app.main_window.play_sound_effect"),
+            patch("todo_app.main_window.save_todos", return_value=True),
+        ):
+            window._show_notification_batch([(window.todos[0], True)])
+            self.assertTrue(window._notification_dialog.isVisible())
+
+            # 隐藏主窗口后启用 1 小时勿扰，从托盘恢复主窗口时不得重新弹出已保留的通知窗
+            window._hide_notification_dialog()
+            window.hide()
+            window.enable_dnd_for_one_hour()
+            window.toggle_window_visibility()
+            self.assertTrue(window.isVisible())
+            self.assertFalse(window._notification_dialog.isVisible())
+            self.assertIn(501, window._notification_dialog._task_rows)
+
+            # 勿扰到期即使无新触发任务，tick_update 也应主动恢复保留的通知批
+            window._dnd_until_utc = datetime.now(timezone.utc) - timedelta(seconds=1)
+            window.tick_update()
+            self.assertFalse(window.is_dnd_active())
+            self.assertTrue(window._notification_dialog.isVisible())
+
+    def test_import_validates_offsets_created_at_and_export_protects_hardlinks(self) -> None:
+        import os
+
+        window = self._create_window([])
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_root = Path(tmp_dir)
+
+            # 1. 非法/超范围 reminderOffset 与组合溢出的 reminderOffset 必须被拒收
+            bad_offset_1 = tmp_root / "bad_offset_huge.json"
+            bad_offset_1.write_text(
+                json.dumps([{"text": "bad", "reminderOffset": 10**12}]),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                window.import_todos_from_file(bad_offset_1)
+
+            bad_offset_2 = tmp_root / "bad_offset_min_date.json"
+            bad_offset_2.write_text(
+                json.dumps(
+                    [
+                        {
+                            "text": "overflow",
+                            "dueDate": "0001-01-01T00:00:00+00:00",
+                            "reminderOffset": 86400,
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                window.import_todos_from_file(bad_offset_2)
+
+            # 2. 超 UTC 范围 createdAt 在提交前即被拒收；合法带偏移 createdAt 规范化为 UTC
+            bad_created = tmp_root / "bad_created.json"
+            bad_created.write_text(
+                json.dumps([{"text": "bad-created", "createdAt": "0001-01-01T00:00:00+08:00"}]),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                window.import_todos_from_file(bad_created)
+
+            good_file = tmp_root / "good_with_inf_id.json"
+            good_file.write_text(
+                '[{"id": 1e309, "text": "非有限ID任务", "createdAt": "2026-11-22T10:00:00+08:00", "reminderOffset": 300}]',
+                encoding="utf-8",
+            )
+            with patch.object(window, "_persist_todos", return_value=True):
+                imported = window.import_todos_from_file(good_file)
+            self.assertEqual(imported, 1)
+            self.assertIsInstance(window.todos[0]["id"], int)
+            self.assertEqual(window.todos[0]["createdAt"], "2026-11-22T02:00:00+00:00")
+
+            # 3. 硬链接指向 active DATA_FILE 时 export_todos_to_file 通过 samefile 保护拒绝覆盖
+            data_target = tmp_root / "active_todos.json"
+            data_target.write_text("[]", encoding="utf-8")
+            hardlink_target = tmp_root / "alias_export.json"
+            os.link(data_target, hardlink_target)
+            window._storage_status = StorageStatus(
+                healthy=True,
+                read_only=False,
+                source=data_target,
+                message="",
+                data_file=data_target,
+                backup_file=None,
+            )
+            with self.assertRaises(ValueError):
+                window.export_todos_to_file(hardlink_target)
+            self.assertEqual(data_target.read_text(encoding="utf-8"), "[]")
+
+            # 4. 导出原子写：替换失败时保持既有目标文件不被截断且无残留 .tmp 文件
+            safe_export = tmp_root / "safe.json"
+            safe_export.write_text("PRIOR_CONTENT", encoding="utf-8")
+            with patch("todo_app.main_window.os.replace", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    window.export_todos_to_file(safe_export)
+            self.assertEqual(safe_export.read_text(encoding="utf-8"), "PRIOR_CONTENT")
+            self.assertEqual(list(tmp_root.glob(".*.tmp")), [])
+
 
 if __name__ == "__main__":
     unittest.main()

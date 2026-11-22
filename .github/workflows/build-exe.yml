@@ -335,8 +335,13 @@ jobs:
             if ("$env:GH_EVENT_NAME" -eq "push" -and "$env:GH_REF" -like "refs/tags/v*") {
               $makeLatest = "true"
             } elseif (-not $isPrerelease) {
-              $latestCheck = gh release view "$targetTag" --json isLatest --jq '.isLatest' 2>$null
-              if ($LASTEXITCODE -eq 0 -and "$latestCheck".Trim().ToLowerInvariant() -eq "true") {
+              $releaseListJson = gh release list --repo "$env:GITHUB_REPOSITORY" --limit 100 --json tagName,isLatest
+              if ($LASTEXITCODE -ne 0) {
+                throw "无法查询仓库 Release 列表，不能安全判断 $targetTag 的 latest 状态"
+              }
+              $releases = if ([string]::IsNullOrWhiteSpace($releaseListJson)) { @() } else { @($releaseListJson | ConvertFrom-Json) }
+              $matchedRelease = $releases | Where-Object { $_.tagName -ceq $targetTag } | Select-Object -First 1
+              if ($null -ne $matchedRelease -and $matchedRelease.isLatest -eq $true) {
                 $makeLatest = "true"
               }
             }

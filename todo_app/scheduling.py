@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import calendar
 import math
-from datetime import date, datetime, timedelta, timezone, tzinfo
+from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from typing import Any
 
 _WEEKDAY_LABELS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
@@ -33,9 +33,12 @@ def _parse_utc_datetime(value: object) -> datetime | None:
     except ValueError:
         return None
 
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+    try:
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except OverflowError:
+        return None
 
 
 def _due_dates_are_equivalent(existing_value: object, updated_value: object) -> bool:
@@ -87,6 +90,40 @@ def build_snooze_update_fields(
     return updated_fields
 
 
+def _normalize_anchor_time(raw_value: object) -> str | None:
+    """规范化本地墙钟锚点时间（HH:MM / HH:MM:SS / HH:MM:SS.ffffff），拒收带偏移/无效串。"""
+
+    if not isinstance(raw_value, str):
+        return None
+    cleaned = raw_value.strip()
+    if not cleaned or any(marker in cleaned for marker in ("T", "t", "Z", "z", "+", "-", " ")):
+        return None
+    try:
+        parsed = time.fromisoformat(cleaned)
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        return None
+    if parsed.microsecond:
+        return parsed.isoformat()
+    if parsed.second:
+        return parsed.strftime("%H:%M:%S")
+    return parsed.strftime("%H:%M")
+
+
+def _format_local_anchor_time(local_dt: datetime) -> str:
+    if local_dt.microsecond:
+        return time(
+            local_dt.hour,
+            local_dt.minute,
+            local_dt.second,
+            local_dt.microsecond,
+        ).isoformat()
+    if local_dt.second:
+        return local_dt.strftime("%H:%M:%S")
+    return local_dt.strftime("%H:%M")
+
+
 def normalize_recurrence(raw: Any) -> dict[str, Any] | None:
     """规范化循环规则；无效或关闭时返回 None，兼容旧版 todos.json。"""
 
@@ -96,19 +133,19 @@ def normalize_recurrence(raw: Any) -> dict[str, Any] | None:
     if not isinstance(frequency, str):
         return None
     frequency = frequency.strip().lower()
+    anchor_time = _normalize_anchor_time(raw.get("anchorTime"))
 
+    normalized: dict[str, Any] | None = None
     if frequency == "daily":
         interval = max(1, min(_safe_int(raw.get("interval", 1), 1), 365))
-        return {
+        normalized = {
             "frequency": "daily",
             "interval": interval,
             "skipWeekends": bool(raw.get("skipWeekends", False)),
         }
-
-    if frequency == "weekdays":
-        return {"frequency": "weekdays"}
-
-    if frequency == "weekly":
+    elif frequency == "weekdays":
+        normalized = {"frequency": "weekdays"}
+    elif frequency == "weekly":
         raw_days = raw.get("weekdays")
         days: list[int] = []
         if isinstance(raw_days, (list, tuple, set)):
@@ -119,20 +156,20 @@ def normalize_recurrence(raw: Any) -> dict[str, Any] | None:
                     seen.add(day_idx)
                     days.append(day_idx)
         days.sort()
-        return {"frequency": "weekly", "weekdays": days}
-
-    if frequency == "monthly":
+        normalized = {"frequency": "weekly", "weekdays": days}
+    elif frequency == "monthly":
         day = max(1, min(_safe_int(raw.get("day", 1), 1), 31))
-        return {"frequency": "monthly", "day": day}
-
-    if frequency == "yearly":
+        normalized = {"frequency": "monthly", "day": day}
+    elif frequency == "yearly":
         month = max(1, min(_safe_int(raw.get("month", 1), 1), 12))
         day_raw = _safe_int(raw.get("day", 1), 1)
         max_feb_or_month = 29 if month == 2 else calendar.monthrange(2024, month)[1]
         day = max(1, min(day_raw, max_feb_or_month))
-        return {"frequency": "yearly", "month": month, "day": day}
+        normalized = {"frequency": "yearly", "month": month, "day": day}
 
-    return None
+    if normalized is not None and anchor_time is not None:
+        normalized["anchorTime"] = anchor_time
+    return normalized
 
 
 def format_recurrence_label(recurrence: Any) -> str:
@@ -270,13 +307,23 @@ def calculate_next_due_utc(
         ref_local_date = ref_utc.astimezone(target_tz).date()
 
     candidate_date = anchor_local.date()
+    anchor_template = anchor_local
+    anchor_time_str = rule.get("anchorTime")
+    if isinstance(anchor_time_str, str):
+        parsed_anchor_time = time.fromisoformat(anchor_time_str)
+        anchor_template = anchor_local.replace(
+            hour=parsed_anchor_time.hour,
+            minute=parsed_anchor_time.minute,
+            second=parsed_anchor_time.second,
+            microsecond=parsed_anchor_time.microsecond,
+        )
 
     def _to_utc(target_date: date) -> datetime:
         return _combine_local(
-            target_date, anchor_local, resolve_system_dst=resolve_system_dst
+            target_date, anchor_template, resolve_system_dst=resolve_system_dst
         ).astimezone(timezone.utc)
 
-    # 针对多天/多年离线快速跳跃；始终基于原始 anchor_local 的墙钟时间解析，避免 DST 空洞漂移
+    # 针对多天/多年离线快速跳跃；始终基于原始墙钟时间锚点解析，避免 DST 空洞漂移
     if rule["frequency"] == "daily" and not rule.get("skipWeekends"):
         interval = int(rule["interval"])
         if _to_utc(candidate_date) <= ref_utc:
@@ -284,6 +331,28 @@ def calculate_next_due_utc(
             steps = days_gap // interval
             if steps > 1:
                 candidate_date = candidate_date + timedelta(days=(steps - 1) * interval)
+    elif rule["frequency"] == "daily" and rule.get("skipWeekends") and int(rule["interval"]) > 1:
+        if _to_utc(candidate_date) <= ref_utc and ref_local_date > candidate_date:
+            seen_weekdays: dict[int, date] = {candidate_date.weekday(): candidate_date}
+            probe_date = candidate_date
+            for _ in range(10):
+                next_probe = _advance_date_once(probe_date, rule)
+                if _to_utc(next_probe) > ref_utc:
+                    candidate_date = probe_date
+                    break
+                probe_date = next_probe
+                wd = probe_date.weekday()
+                if wd in seen_weekdays:
+                    cycle_days = (probe_date - seen_weekdays[wd]).days
+                    remaining_days = (ref_local_date - probe_date).days - 7
+                    if cycle_days > 0 and remaining_days > cycle_days:
+                        cycles = remaining_days // cycle_days
+                        candidate_date = probe_date + timedelta(days=cycles * cycle_days)
+                    else:
+                        candidate_date = probe_date
+                    break
+                seen_weekdays[wd] = probe_date
+                candidate_date = probe_date
     elif rule["frequency"] in ("weekdays", "weekly") or (
         rule["frequency"] == "daily" and rule.get("skipWeekends") and int(rule["interval"]) == 1
     ):
@@ -344,9 +413,16 @@ def build_recurrence_completion_fields(
         reference_utc=ref,
         target_tz=target_tz,
     )
+    updated_rule = dict(rule)
+    if "anchorTime" not in updated_rule:
+        due_utc = _parse_utc_datetime(due_date)
+        if due_utc is not None:
+            source_local = due_utc.astimezone() if target_tz is None else due_utc.astimezone(target_tz)
+            updated_rule["anchorTime"] = _format_local_anchor_time(source_local)
     return {
         "completed": False,
         "dueDate": next_due_iso,
+        "recurrence": updated_rule,
         "snoozeUntil": None,
         "notifiedForReminder": False,
         "notifiedForDue": False,
@@ -367,6 +443,15 @@ def build_edit_update_fields(existing: dict[str, Any], updated_data: dict[str, A
         if resolved_due is not None and "recurrence" in updated_data
         else (None if resolved_due is None else normalize_recurrence(existing.get("recurrence")))
     )
+    if due_date_changed and resolved_recurrence is not None and "anchorTime" in resolved_recurrence:
+        updated_rule = updated_data.get("recurrence") if "recurrence" in updated_data else None
+        explicit_anchor = (
+            _normalize_anchor_time(updated_rule.get("anchorTime"))
+            if isinstance(updated_rule, dict)
+            else None
+        )
+        if explicit_anchor is None:
+            resolved_recurrence.pop("anchorTime", None)
 
     updated_fields: dict[str, Any] = {
         "text": updated_data["text"],

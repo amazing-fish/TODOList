@@ -1508,7 +1508,7 @@ class UndoToastBar(QFrame):
         self.setObjectName("undoToastBar")
         self._theme_manager = get_theme_manager()
         self._palette = palette or self._theme_manager.current_palette
-        self._undo_callback: Optional[Callable[[], None]] = None
+        self._undo_callback: Optional[Callable[[], object]] = None
         self._pending_duration_ms: int = 0
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
@@ -1548,7 +1548,7 @@ class UndoToastBar(QFrame):
     def show_toast(
         self,
         message: str,
-        undo_callback: Callable[[], None],
+        undo_callback: Callable[[], object],
         duration_ms: int = UNDO_TOAST_DURATION_MS,
     ) -> None:
         self._timer.stop()
@@ -1580,8 +1580,16 @@ class UndoToastBar(QFrame):
         if callback is None:
             self.dismiss()
             return False
-        self.dismiss()
-        callback()
+        self._timer.stop()
+        result = callback()
+        if result is False:
+            if self._undo_callback is callback:
+                self._pending_duration_ms = 0
+                self.setVisible(True)
+                self._timer.start(UNDO_TOAST_DURATION_MS)
+            return False
+        if self._undo_callback is callback:
+            self.dismiss()
         return True
 
     def dismiss(self) -> None:

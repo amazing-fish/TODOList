@@ -221,6 +221,19 @@ class NotificationDialog(QDialog):
         row["detail_label"].setText(self._format_due_text(todo_item))
         row["status_label"].setText("已到期" if row["is_due"] else "提前提醒")
 
+    def refresh_tasks_if_present(self, todos: list[dict]) -> None:
+        """若指定任务仍在当前提醒窗中，同步刷新其引用与展示文本（不新增行）。"""
+
+        for todo_item in todos:
+            todo_id_raw = todo_item.get("id")
+            if todo_id_raw is None:
+                continue
+            todo_id = int(todo_id_raw)
+            existing = self._task_rows.get(todo_id)
+            if existing is not None:
+                existing["todo_item"] = todo_item
+                self._update_task_row(todo_id)
+
     def _refresh_relative_times(self) -> None:
         current_time_utc = datetime.now(timezone.utc)
         for row in self._task_rows.values():
@@ -536,6 +549,7 @@ class TaskEditDialog(QDialog):
         self._preserved_due_date_iso: Optional[str] = None
         self._loaded_due_date_key: Optional[str] = None
         self._loaded_recurrence: Optional[dict] = None
+        self._preserve_empty_weekly: bool = False
         self._theme_manager = get_theme_manager()
         self._palette: ThemeColors = self._theme_manager.current_palette
         self._theme_manager.theme_changed.connect(self._on_theme_changed)
@@ -660,7 +674,7 @@ class TaskEditDialog(QDialog):
         self.recurrence_combo.addItem("每周", "weekly")
         self.recurrence_combo.addItem("每月", "monthly")
         self.recurrence_combo.addItem("每年", "yearly")
-        self.recurrence_combo.currentIndexChanged.connect(self._sync_recurrence_controls)
+        self.recurrence_combo.currentIndexChanged.connect(self._on_recurrence_combo_changed)
         recurrence_row.addWidget(self.recurrence_combo, 1)
 
         self.skip_weekends_checkbox = QCheckBox("跳过周末")
@@ -679,6 +693,7 @@ class TaskEditDialog(QDialog):
             day_btn.setObjectName(f"weeklyDayButton_{idx}")
             day_btn.setProperty("duePresetChip", True)
             day_btn.setCheckable(True)
+            day_btn.clicked.connect(self._on_weekly_day_clicked)
             weekly_days_layout.addWidget(day_btn)
             self.weekly_day_buttons.append(day_btn)
         weekly_days_layout.addStretch(1)
@@ -836,20 +851,36 @@ class TaskEditDialog(QDialog):
     def _populate_recurrence_fields(self, raw_recurrence: object) -> None:
         rule = normalize_recurrence(raw_recurrence)
         self._loaded_recurrence = dict(rule) if rule is not None else None
+        self._preserve_empty_weekly = False
         if rule is None or not self.set_due_date_button.isChecked():
+            self.recurrence_combo.blockSignals(True)
             self.recurrence_combo.setCurrentIndex(0)
+            self.recurrence_combo.blockSignals(False)
             self._sync_recurrence_controls()
             return
         freq = rule["frequency"]
         idx = self.recurrence_combo.findData(freq)
+        self.recurrence_combo.blockSignals(True)
         self.recurrence_combo.setCurrentIndex(max(idx, 0))
+        self.recurrence_combo.blockSignals(False)
         if freq == "daily":
             self.skip_weekends_checkbox.setChecked(bool(rule.get("skipWeekends", False)))
         elif freq == "weekly":
-            selected = set(rule.get("weekdays") or [])
+            raw_days = rule.get("weekdays") or []
+            self._preserve_empty_weekly = len(raw_days) == 0
+            selected = set(raw_days)
             for day_idx, btn in enumerate(self.weekly_day_buttons):
+                btn.blockSignals(True)
                 btn.setChecked(day_idx in selected)
+                btn.blockSignals(False)
         self._sync_recurrence_controls()
+
+    def _on_recurrence_combo_changed(self, *_args: object) -> None:
+        self._preserve_empty_weekly = False
+        self._sync_recurrence_controls()
+
+    def _on_weekly_day_clicked(self, *_args: object) -> None:
+        self._preserve_empty_weekly = False
 
     def _sync_recurrence_controls(self, *_args: object) -> None:
         has_due = self.set_due_date_button.isChecked()
@@ -860,7 +891,10 @@ class TaskEditDialog(QDialog):
         if has_due and freq == "weekly" and not any(btn.isChecked() for btn in self.weekly_day_buttons):
             anchor_weekday = self.date_edit.date().dayOfWeek() - 1
             if 0 <= anchor_weekday < len(self.weekly_day_buttons):
-                self.weekly_day_buttons[anchor_weekday].setChecked(True)
+                btn = self.weekly_day_buttons[anchor_weekday]
+                btn.blockSignals(True)
+                btn.setChecked(True)
+                btn.blockSignals(False)
 
     def _serialize_recurrence(self) -> Optional[dict]:
         if not self.set_due_date_button.isChecked():
@@ -869,36 +903,47 @@ class TaskEditDialog(QDialog):
         if not isinstance(freq, str) or freq == "none":
             return None
         qdate = self.date_edit.date()
+        current_selection = self._current_due_selection()
         current_date_key = qdate.toString(Qt.DateFormat.ISODate)
         loaded = self._loaded_recurrence
+        due_time_changed = (
+            self._preserved_due_selection is None
+            or current_selection[1] != self._preserved_due_selection[1]
+        )
+
+        result: Optional[dict] = None
         if freq == "daily":
             interval = (
                 int(loaded.get("interval", 1))
                 if loaded is not None and loaded.get("frequency") == "daily"
                 else 1
             )
-            return {
+            result = {
                 "frequency": "daily",
                 "interval": interval,
                 "skipWeekends": self.skip_weekends_checkbox.isChecked(),
             }
-        if freq == "weekdays":
-            return {"frequency": "weekdays"}
-        if freq == "weekly":
-            days = [idx for idx, btn in enumerate(self.weekly_day_buttons) if btn.isChecked()]
-            if not days:
-                days = [qdate.dayOfWeek() - 1]
-            return {"frequency": "weekly", "weekdays": days}
-        if freq == "monthly":
+        elif freq == "weekdays":
+            result = {"frequency": "weekdays"}
+        elif freq == "weekly":
+            if self._preserve_empty_weekly:
+                days = []
+            else:
+                days = [idx for idx, btn in enumerate(self.weekly_day_buttons) if btn.isChecked()]
+                if not days:
+                    days = [qdate.dayOfWeek() - 1]
+            result = {"frequency": "weekly", "weekdays": days}
+        elif freq == "monthly":
             if (
                 loaded is not None
                 and loaded.get("frequency") == "monthly"
                 and self._loaded_due_date_key == current_date_key
                 and "day" in loaded
             ):
-                return {"frequency": "monthly", "day": int(loaded["day"])}
-            return {"frequency": "monthly", "day": qdate.day()}
-        if freq == "yearly":
+                result = {"frequency": "monthly", "day": int(loaded["day"])}
+            else:
+                result = {"frequency": "monthly", "day": qdate.day()}
+        elif freq == "yearly":
             if (
                 loaded is not None
                 and loaded.get("frequency") == "yearly"
@@ -906,13 +951,21 @@ class TaskEditDialog(QDialog):
                 and "month" in loaded
                 and "day" in loaded
             ):
-                return {
+                result = {
                     "frequency": "yearly",
                     "month": int(loaded["month"]),
                     "day": int(loaded["day"]),
                 }
-            return {"frequency": "yearly", "month": qdate.month(), "day": qdate.day()}
-        return None
+            else:
+                result = {"frequency": "yearly", "month": qdate.month(), "day": qdate.day()}
+
+        if result is None:
+            return None
+        if due_time_changed or self.todo_item is None:
+            result["anchorTime"] = self.time_edit.time().toString("HH:mm")
+        elif loaded is not None and loaded.get("anchorTime"):
+            result["anchorTime"] = loaded["anchorTime"]
+        return result
 
     def toggle_due_date_controls(self, checked: bool) -> None:
         self.due_date_controls_widget.setVisible(checked)
