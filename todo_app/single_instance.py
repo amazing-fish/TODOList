@@ -39,10 +39,17 @@ class SingleInstanceGuard(QObject):
         self._lock_dir = lock_dir
         self._lock_file: Optional[QLockFile] = None
         self._server: Optional[QLocalServer] = None
+        self._acquisition_error: Optional[str] = None
 
     @property
     def server_name(self) -> str:
         return self._server_name
+
+    @property
+    def acquisition_error(self) -> Optional[str]:
+        """当未能建立任何单实例互斥机制时返回错误描述，否则返回 None。"""
+
+        return self._acquisition_error
 
     def _lock_path(self) -> Path:
         base_dir = self._lock_dir
@@ -67,18 +74,45 @@ class SingleInstanceGuard(QObject):
         probe.deleteLater()
         return False
 
+    def _listen_fallback_server(self) -> bool:
+        """在确认无存活实例后，尝试通过本地服务提供互斥与唤醒保护。"""
+
+        server = QLocalServer(self)
+        if not server.listen(self._server_name):
+            QLocalServer.removeServer(self._server_name)
+            if not server.listen(self._server_name):
+                error_detail = server.errorString() or "unknown listen failure"
+                logger.error(
+                    "单实例本地服务监听 %s 失败 (%s)，无法建立互斥保护",
+                    self._server_name,
+                    error_detail,
+                )
+                server.deleteLater()
+                self._acquisition_error = error_detail
+                return False
+
+        server.newConnection.connect(self._handle_new_connection)
+        self._server = server
+        return True
+
     def try_acquire(self, timeout_ms: int = 500) -> bool:
         """尝试获取单实例锁；若已有实例运行则发送唤醒指令并返回 False。"""
 
-        if self._lock_file is not None:
+        self._acquisition_error = None
+        if self._lock_file is not None or self._server is not None:
             return True
 
         lock_path = self._lock_path()
         try:
             lock_path.parent.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            logger.warning("创建单实例锁目录失败 (%s)，允许独立启动", exc)
-            return True
+            if self._probe_existing_instance(timeout_ms):
+                return False
+            logger.warning("创建单实例锁目录失败 (%s)，尝试回退为本地服务串行化", exc)
+            if self._listen_fallback_server():
+                return True
+            self._acquisition_error = f"{exc}; {self._acquisition_error or ''}".strip("; ")
+            return False
 
         lock = QLockFile(str(lock_path))
         lock.setStaleLockTime(0)
@@ -94,18 +128,7 @@ class SingleInstanceGuard(QObject):
                 lock_path,
                 lock_error,
             )
-            server = QLocalServer(self)
-            if server.listen(self._server_name):
-                server.newConnection.connect(self._handle_new_connection)
-                self._server = server
-            else:
-                logger.warning(
-                    "单实例本地服务监听 %s 失败 (%s)，将允许独立启动",
-                    self._server_name,
-                    server.errorString(),
-                )
-                server.deleteLater()
-            return True
+            return self._listen_fallback_server()
 
         server = QLocalServer(self)
         if not server.listen(self._server_name):

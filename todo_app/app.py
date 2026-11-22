@@ -1,10 +1,11 @@
 """应用程序入口函数。"""
 from __future__ import annotations
 
+import logging
 import sys
 
 from PySide6.QtCore import QMessageLogContext, QtMsgType, qInstallMessageHandler
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from .constants import (
     APP_ICON_PATH,
@@ -36,6 +37,7 @@ def _filter_qt_messages(mode: QtMsgType, context: QMessageLogContext, message: s
 
 
 _original_qt_message_handler = qInstallMessageHandler(_filter_qt_messages)
+logger = logging.getLogger(__name__)
 
 
 def run() -> None:
@@ -54,6 +56,15 @@ def run() -> None:
         lock_dir=RUNTIME_STORAGE_DIR,
     )
     if not guard.try_acquire():
+        acquisition_error = getattr(guard, "acquisition_error", None)
+        if isinstance(acquisition_error, str) and acquisition_error:
+            logger.error("单实例互斥初始化失败，中止启动: %s", acquisition_error)
+            QMessageBox.critical(
+                None,
+                APP_NAME,
+                f"无法建立单实例互斥保护，为防止多开损坏待办数据已中止启动：\n{acquisition_error}",
+            )
+            sys.exit(1)
         sys.exit(0)
 
     try:
