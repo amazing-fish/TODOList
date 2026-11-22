@@ -83,8 +83,29 @@ class SingleInstanceGuard(QObject):
         lock = QLockFile(str(lock_path))
         lock.setStaleLockTime(0)
         if not lock.tryLock(timeout_ms):
-            self._probe_existing_instance(timeout_ms)
-            return False
+            lock_error = lock.error()
+            if lock_error == QLockFile.LockError.LockFailedError:
+                self._probe_existing_instance(timeout_ms)
+                return False
+            if self._probe_existing_instance(timeout_ms):
+                return False
+            logger.warning(
+                "单实例文件锁 %s 创建失败 (%s)，回退为仅通过本地服务串行化",
+                lock_path,
+                lock_error,
+            )
+            server = QLocalServer(self)
+            if server.listen(self._server_name):
+                server.newConnection.connect(self._handle_new_connection)
+                self._server = server
+            else:
+                logger.warning(
+                    "单实例本地服务监听 %s 失败 (%s)，将允许独立启动",
+                    self._server_name,
+                    server.errorString(),
+                )
+                server.deleteLater()
+            return True
 
         server = QLocalServer(self)
         if not server.listen(self._server_name):

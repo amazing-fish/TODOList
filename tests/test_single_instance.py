@@ -53,6 +53,35 @@ class SingleInstanceTest(unittest.TestCase):
         self.app.processEvents()
         self.assertEqual(activated, [True])
 
+    def test_lock_creation_errors_do_not_silently_exit_when_no_other_instance_runs(self) -> None:
+        from PySide6.QtCore import QLockFile
+
+        for lock_error in (
+            QLockFile.LockError.PermissionError,
+            QLockFile.LockError.UnknownError,
+        ):
+            with self.subTest(lock_error=lock_error):
+                temp_dir = tempfile.TemporaryDirectory()
+                self.addCleanup(temp_dir.cleanup)
+                lock_dir = Path(temp_dir.name)
+                server_name = build_instance_server_name(lock_dir)
+                guard = SingleInstanceGuard(server_name, lock_dir=lock_dir)
+                self.addCleanup(guard.release)
+
+                fake_lock = MagicMock()
+                fake_lock.tryLock.return_value = False
+                fake_lock.error.return_value = lock_error
+                with patch("todo_app.single_instance.QLockFile", return_value=fake_lock):
+                    self.assertTrue(guard.try_acquire())
+
+                second = SingleInstanceGuard(server_name, lock_dir=lock_dir)
+                self.addCleanup(second.release)
+                fake_second_lock = MagicMock()
+                fake_second_lock.tryLock.return_value = False
+                fake_second_lock.error.return_value = lock_error
+                with patch("todo_app.single_instance.QLockFile", return_value=fake_second_lock):
+                    self.assertFalse(second.try_acquire())
+
     def test_run_exits_cleanly_when_another_instance_holds_lock(self) -> None:
         fake_app = MagicMock()
         fake_guard = MagicMock()
