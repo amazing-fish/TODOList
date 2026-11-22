@@ -36,20 +36,22 @@ class SingleInstanceTest(unittest.TestCase):
             )
 
     def test_second_instance_signals_primary_and_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            server_name = build_instance_server_name(Path(temp_dir))
-            primary = SingleInstanceGuard(server_name)
-            secondary = SingleInstanceGuard(server_name)
-            self.addCleanup(secondary.release)
-            self.addCleanup(primary.release)
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        lock_dir = Path(temp_dir.name)
+        server_name = build_instance_server_name(lock_dir)
+        primary = SingleInstanceGuard(server_name, lock_dir=lock_dir)
+        secondary = SingleInstanceGuard(server_name, lock_dir=lock_dir)
+        self.addCleanup(secondary.release)
+        self.addCleanup(primary.release)
 
-            activated: list[bool] = []
-            primary.activate_requested.connect(lambda: activated.append(True))
+        activated: list[bool] = []
+        primary.activate_requested.connect(lambda: activated.append(True))
 
-            self.assertTrue(primary.try_acquire())
-            self.assertFalse(secondary.try_acquire())
-            self.app.processEvents()
-            self.assertEqual(activated, [True])
+        self.assertTrue(primary.try_acquire())
+        self.assertFalse(secondary.try_acquire())
+        self.app.processEvents()
+        self.assertEqual(activated, [True])
 
     def test_run_exits_cleanly_when_another_instance_holds_lock(self) -> None:
         fake_app = MagicMock()

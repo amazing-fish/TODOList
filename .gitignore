@@ -15,6 +15,7 @@ todos.json
 todos.json.bak
 todos.json.corrupt.*
 .todos.json.*.tmp
+.TODOList-*.lock
 logs/
 
 # PyInstaller 构建产物

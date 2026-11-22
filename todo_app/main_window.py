@@ -1514,12 +1514,18 @@ class ModernTodoAppWindow(QMainWindow):
         if sort_key == "创建时间 (新->旧)":
             return sorted(
                 todos_list,
-                key=lambda t: (bool(t.get("completed", False)), -get_created_ts(t)),
+                key=lambda t: (
+                    bool(t.get("completed", False)),
+                    -get_created_ts(t),
+                ),
             )
         if sort_key == "创建时间 (旧->新)":
             return sorted(
                 todos_list,
-                key=lambda t: (bool(t.get("completed", False)), get_created_ts(t)),
+                key=lambda t: (
+                    bool(t.get("completed", False)),
+                    get_created_ts(t),
+                ),
             )
         if sort_key == "截止日期 (近->远)":
             return sorted(

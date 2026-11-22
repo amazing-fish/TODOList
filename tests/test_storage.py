@@ -316,6 +316,23 @@ class StorageTest(unittest.TestCase):
             app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
             app.processEvents()
 
+    def test_quarantine_rolls_back_damaged_main_when_save_fails(self) -> None:
+        damaged_content = '{"unfinished":'
+        self.data_file.write_text(damaged_content, encoding="utf-8")
+        recovered = [_todo(1, "备份任务")]
+        self._write_json(self.backup_file, recovered)
+
+        with (
+            patch("todo_app.storage.save_todos", return_value=False),
+            self.assertRaisesRegex(OSError, "写入新数据失败"),
+        ):
+            storage.quarantine_damaged_main_file(recovered)
+
+        self.assertEqual(self.data_file.read_text(encoding="utf-8"), damaged_content)
+        self.assertEqual(list(self.data_file.parent.glob("todos.json.corrupt.*")), [])
+        self.assertFalse(storage.get_last_save_status().healthy)
+        self.assertTrue(storage.get_last_save_status().read_only)
+
 
 if __name__ == "__main__":
     unittest.main()

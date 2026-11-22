@@ -49,7 +49,10 @@ def run() -> None:
     app.setQuitOnLastWindowClosed(False)
     apply_application_font()
 
-    guard = SingleInstanceGuard(build_instance_server_name(RUNTIME_STORAGE_DIR))
+    guard = SingleInstanceGuard(
+        build_instance_server_name(RUNTIME_STORAGE_DIR),
+        lock_dir=RUNTIME_STORAGE_DIR,
+    )
     if not guard.try_acquire():
         sys.exit(0)
 

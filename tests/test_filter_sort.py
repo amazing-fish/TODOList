@@ -85,10 +85,12 @@ class FilterSortPersistenceTest(unittest.TestCase):
         self.assertEqual(ordered_ids, [3, 2, 4, 1])
 
     def test_created_sort_puts_completed_tasks_at_bottom(self) -> None:
+        now = datetime.now(timezone.utc)
         todos = [
             _make_todo(1, "较新已完成", completed=True, created_at="2026-09-03T00:00:00+00:00"),
-            _make_todo(2, "较旧未完成", completed=False, created_at="2026-09-01T00:00:00+00:00"),
-            _make_todo(3, "较新未完成", completed=False, created_at="2026-09-02T00:00:00+00:00"),
+            _make_todo(2, "较旧未完成", completed=False, created_at="2026-09-01T00:00:00+00:00", due_date=(now + timedelta(days=1)).isoformat()),
+            _make_todo(3, "较新未完成", completed=False, created_at="2026-09-02T00:00:00+00:00", due_date=(now + timedelta(days=2)).isoformat()),
+            _make_todo(4, "最新无截止未完成", completed=False, created_at="2026-09-04T00:00:00+00:00", due_date=None),
         ]
         window = self._create_window(todos)
 
@@ -96,7 +98,24 @@ class FilterSortPersistenceTest(unittest.TestCase):
             window.list_widget.itemWidget(window.list_widget.item(i)).todo_item["id"]
             for i in range(window.list_widget.count())
         ]
-        self.assertEqual(ordered_ids, [3, 2, 1])
+        self.assertEqual(ordered_ids, [4, 3, 2, 1])
+
+    def test_priority_sort_keeps_high_priority_undated_before_low_priority_dated(self) -> None:
+        now = datetime.now(timezone.utc)
+        todos = [
+            _make_todo(1, "低优有截止", priority="低", due_date=(now + timedelta(hours=1)).isoformat()),
+            _make_todo(2, "高优无截止", priority="高", due_date=None),
+            _make_todo(3, "高优有截止", priority="高", due_date=(now + timedelta(days=1)).isoformat()),
+            _make_todo(4, "已完成高优", completed=True, priority="高", due_date=(now + timedelta(hours=1)).isoformat()),
+        ]
+        window = self._create_window(todos)
+        window.sort_combo.setCurrentText("优先级 (高->低)")
+
+        ordered_ids = [
+            window.list_widget.itemWidget(window.list_widget.item(i)).todo_item["id"]
+            for i in range(window.list_widget.count())
+        ]
+        self.assertEqual(ordered_ids, [3, 2, 1, 4])
 
     def test_today_filter_includes_overdue_and_overdue_filter_matches_only_due(self) -> None:
         now = datetime.now(timezone.utc)

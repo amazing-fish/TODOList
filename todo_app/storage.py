@@ -349,6 +349,33 @@ def quarantine_damaged_main_file(
     logger.warning("已将损坏主文件隔离到 %s", quarantine_path)
     if target == DATA_FILE:
         if not save_todos(todos_list):
+            try:
+                os.replace(quarantine_path, target)
+                logger.warning("写入新数据失败，已回滚恢复原主文件 %s", target)
+                _last_save_status = _build_status(
+                    healthy=False,
+                    read_only=True,
+                    source=_backup_path(target),
+                    message=(
+                        f"主数据文件 {target.name} 隔离后写入失败，已保留原损坏文件；"
+                        "请检查目录权限后重试。"
+                    ),
+                    data_file=target,
+                )
+                _last_load_status = _last_save_status
+            except OSError as rollback_exc:
+                logger.exception("回滚损坏主文件 %s 失败: %s", quarantine_path, rollback_exc)
+                _last_save_status = _build_status(
+                    healthy=False,
+                    read_only=False,
+                    source=quarantine_path,
+                    message=(
+                        f"损坏文件已备份至 {quarantine_path.name}，但写入新数据失败；"
+                        "请检查目录权限后重新保存。"
+                    ),
+                    data_file=target,
+                )
+                _last_load_status = _last_save_status
             raise OSError("隔离损坏文件后写入新数据失败")
         _last_load_status = _last_save_status
     return quarantine_path
