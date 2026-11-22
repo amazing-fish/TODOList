@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import tempfile
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ from typing import Any
 
 from .constants import REMINDER_SECONDS_TO_TEXT_MAP
 from .paths import DATA_FILE
+from .scheduling import normalize_recurrence
 
 
 logger = logging.getLogger(__name__)
@@ -135,20 +137,38 @@ def _migrate_and_validate_todo_item(todo_dict: dict[str, Any], current_index: in
     is_new_id_needed = False
     original_id_for_warning = item.get("id", "未提供")
 
-    if "id" not in item:
+    if "id" not in item or isinstance(item.get("id"), bool):
+        if "id" in item:
+            logger.warning(
+                "任务 %r 的 ID %r 无效，将重新生成",
+                item.get("text", "未知"),
+                original_id_for_warning,
+            )
         is_new_id_needed = True
-    elif not isinstance(item.get("id"), (int, float)):
+    elif isinstance(item.get("id"), float):
+        raw_float = item["id"]
+        if math.isfinite(raw_float):
+            item["id"] = int(raw_float)
+        else:
+            logger.warning(
+                "任务 %r 的 ID %r 非有限数字，将重新生成",
+                item.get("text", "未知"),
+                original_id_for_warning,
+            )
+            is_new_id_needed = True
+    elif not isinstance(item.get("id"), int):
         try:
-            item["id"] = int(float(str(item["id"])))
-        except (ValueError, TypeError):
+            parsed_float = float(str(item["id"]))
+            if not math.isfinite(parsed_float):
+                raise ValueError("non-finite id")
+            item["id"] = int(parsed_float)
+        except (ValueError, TypeError, OverflowError):
             logger.warning(
                 "任务 %r 的 ID %r 无效，将重新生成",
                 item.get("text", "未知"),
                 original_id_for_warning,
             )
             is_new_id_needed = True
-    elif isinstance(item.get("id"), float):
-        item["id"] = int(item["id"])
 
     processed_ids = [it["id"] for it in processed if isinstance(it.get("id"), int)]
     existing_ids = set(processed_ids)
@@ -176,7 +196,19 @@ def _migrate_and_validate_todo_item(todo_dict: dict[str, Any], current_index: in
     item.setdefault("lastNotifiedAt", None)
     item.setdefault("notifiedForReminder", False)
     item.setdefault("notifiedForDue", False)
+    if "recurrence" in item:
+        item["recurrence"] = normalize_recurrence(item.get("recurrence"))
     return item
+
+
+def normalize_todo_list(raw_items: list[Any]) -> list[dict[str, Any]]:
+    """对外部导入或加载的任务字典列表执行统一校验、补全与 ID 去重迁移。"""
+
+    processed: list[dict[str, Any]] = []
+    for index, todo in enumerate(raw_items):
+        if isinstance(todo, dict):
+            processed.append(_migrate_and_validate_todo_item(todo, index, processed))
+    return processed
 
 
 def load_todos() -> list[dict[str, Any]]:
@@ -386,6 +418,7 @@ __all__ = [
     "get_last_load_status",
     "get_last_save_status",
     "load_todos",
+    "normalize_todo_list",
     "quarantine_damaged_main_file",
     "save_todos",
     "REMINDER_SECONDS_TO_TEXT_MAP",

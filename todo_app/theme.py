@@ -13,10 +13,29 @@ from .constants import DARK_THEME_COLORS, LIGHT_THEME_COLORS, ThemeColors
 
 
 class ThemeMode(str, Enum):
-    """系统主题模式。"""
+    """实际渲染的主题模式。"""
 
     LIGHT = "light"
     DARK = "dark"
+
+
+class ThemePreference(str, Enum):
+    """用户配置的主题偏好。"""
+
+    SYSTEM = "system"
+    LIGHT = "light"
+    DARK = "dark"
+
+    @classmethod
+    def coerce(cls, value: object) -> "ThemePreference":
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            for item in cls:
+                if item.value == normalized:
+                    return item
+        return cls.SYSTEM
 
 
 class ThemeManager(QObject):
@@ -26,13 +45,31 @@ class ThemeManager(QObject):
 
     def __init__(self) -> None:
         super().__init__()
-        self._palette = self._select_palette(self._detect_mode())
+        self._preference = ThemePreference.SYSTEM
+        self._palette = self._select_palette(self._resolve_mode())
         app = QApplication.instance()
         if app:
             hints = app.styleHints()
             color_scheme_changed = getattr(hints, "colorSchemeChanged", None)
             if hasattr(color_scheme_changed, "connect"):
                 color_scheme_changed.connect(self._handle_color_scheme_changed)
+
+    @property
+    def preference(self) -> ThemePreference:
+        return self._preference
+
+    def set_preference(self, preference: ThemePreference | str) -> ThemePreference:
+        resolved = ThemePreference.coerce(preference)
+        self._preference = resolved
+        self._apply_mode(self._resolve_mode())
+        return self._preference
+
+    def _resolve_mode(self) -> ThemeMode:
+        if self._preference == ThemePreference.DARK:
+            return ThemeMode.DARK
+        if self._preference == ThemePreference.LIGHT:
+            return ThemeMode.LIGHT
+        return self._detect_mode()
 
     @property
     def current_palette(self) -> ThemeColors:
@@ -68,6 +105,8 @@ class ThemeManager(QObject):
 
     @Slot(Qt.ColorScheme)
     def _handle_color_scheme_changed(self, scheme: Qt.ColorScheme) -> None:
+        if self._preference != ThemePreference.SYSTEM:
+            return
         mode = ThemeMode.DARK if scheme == Qt.ColorScheme.Dark else ThemeMode.LIGHT
         self._apply_mode(mode)
 
@@ -101,6 +140,7 @@ def get_current_palette() -> ThemeColors:
 __all__ = [
     "ThemeManager",
     "ThemeMode",
+    "ThemePreference",
     "get_theme_manager",
     "get_current_palette",
 ]

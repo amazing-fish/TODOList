@@ -27,7 +27,7 @@ class ApplicationIdentityTest(unittest.TestCase):
 
     def test_visible_identity_targets_v2_without_changing_settings_namespace(self) -> None:
         self.assertEqual(APP_NAME, "桌面待办事项")
-        self.assertEqual(APP_VERSION, "3.0.0")
+        self.assertEqual(APP_VERSION, "3.1.0")
         self.assertNotIn("v1", APP_NAME)
         self.assertEqual(SETTINGS_ORGANIZATION, "MyProductiveApp")
         self.assertEqual(SETTINGS_APPLICATION, "桌面待办事项 v1")
@@ -100,6 +100,10 @@ class ApplicationIdentityTest(unittest.TestCase):
                 call("filterOption"),
                 call("sortOption"),
                 call("windowAlwaysOnTop"),
+                call("themePreference"),
+                call("soundEnabled"),
+                call("dndEnabled"),
+                call("dndUntilUtc"),
             ],
         )
         restore_geometry.assert_called_once_with(legacy_geometry)

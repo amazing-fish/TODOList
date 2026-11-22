@@ -72,6 +72,7 @@ from .layout import (
     calculate_task_details_width,
 )
 from .utils import get_icon
+from .scheduling import format_recurrence_label, normalize_recurrence
 from .theme import ThemeColors, get_theme_manager
 
 
@@ -625,6 +626,7 @@ class TodoItemWidget(QFrame):
     request_delete = Signal(object)
     request_toggle_complete = Signal(object)
     request_quick_snooze = Signal(object, object)
+    request_finish_recurrence = Signal(object)
 
     def __init__(
         self, todo_item: dict, parent: Optional[QWidget] = None, *, palette: Optional[ThemeColors] = None
@@ -784,6 +786,7 @@ class TodoItemWidget(QFrame):
 
         self.priority_label.setText(self._priority_badge_html(self.todo_item.get("priority", "中")))
         self.priority_label.setTextFormat(Qt.TextFormat.RichText)
+        self._update_recurrence_badge()
 
         # 主题色即使与上次恰好相同，也需要重新应用完整呈现状态。
         self._rendered_completed_state = None
@@ -889,11 +892,20 @@ class TodoItemWidget(QFrame):
         )
         is_completed = bool(self.todo_item.get("completed", False))
         has_due_date = bool(self.todo_item.get("dueDate"))
+        has_recurrence = normalize_recurrence(self.todo_item.get("recurrence")) is not None
+        can_advance_recurrence = has_recurrence and has_due_date
         menu.addAction("编辑任务", self._edit_item)
-        menu.addAction(
-            "标记为未完成" if is_completed else "标记为已完成",
-            self._toggle_complete,
+        toggle_label = (
+            "标记为未完成"
+            if is_completed
+            else ("完成本周期（顺延下次）" if can_advance_recurrence else "标记为已完成")
         )
+        menu.addAction(toggle_label, self._toggle_complete)
+        if has_recurrence and not is_completed:
+            menu.addAction(
+                "结束循环并标记完成",
+                lambda _checked=False, tid=self.todo_item.get("id"): self.request_finish_recurrence.emit(tid),
+            )
         snooze_menu = menu.addMenu("快速推迟")
         snooze_menu.setEnabled((not is_completed) and has_due_date)
         todo_id = self.todo_item.get("id")
@@ -1226,6 +1238,10 @@ class TodoItemWidget(QFrame):
         next_priority = next_todo.get("priority", "中")
         text_changed = self.original_text != next_text
         priority_changed = self.todo_item.get("priority", "中") != next_priority
+        recurrence_changed = (
+            normalize_recurrence(self.todo_item.get("recurrence"))
+            != normalize_recurrence(next_todo.get("recurrence"))
+        )
 
         self.todo_item.clear()
         self.todo_item.update(next_todo)
@@ -1238,14 +1254,37 @@ class TodoItemWidget(QFrame):
                 self._priority_badge_html(next_priority)
             )
             self.priority_label.setTextFormat(Qt.TextFormat.RichText)
+        if recurrence_changed:
+            self._update_recurrence_badge()
 
         presentation_changed = self.update_timer_display(
             current_time_utc or datetime.now(timezone.utc)
         )
-        content_changed = text_changed or priority_changed
+        content_changed = text_changed or priority_changed or recurrence_changed
         if content_changed and not presentation_changed:
             self.update_text_display()
         return content_changed or presentation_changed
+
+    def _update_recurrence_badge(self) -> None:
+        label = format_recurrence_label(self.todo_item.get("recurrence"))
+        if not label:
+            self.recurrence_badge_label.setText("")
+            self.recurrence_badge_label.setVisible(False)
+            return
+        self.recurrence_badge_label.setText(f"↻ {label}")
+        self.recurrence_badge_label.setStyleSheet(
+            f"""
+            QLabel#TodoRecurrenceBadge {{
+                color: {self._palette.accent};
+                background-color: {self._palette.secondary_background};
+                border: 1px solid {self._palette.card_border};
+                border-radius: 3px;
+                padding: 1px 5px;
+                font-size: 8pt;
+            }}
+            """
+        )
+        self.recurrence_badge_label.setVisible(True)
 
     def update_text_display(self) -> None:
         if self.task_text_label.text() != self.original_text:
@@ -1469,7 +1508,7 @@ class UndoToastBar(QFrame):
         self.setObjectName("undoToastBar")
         self._theme_manager = get_theme_manager()
         self._palette = palette or self._theme_manager.current_palette
-        self._undo_callback: Optional[Callable[[], None]] = None
+        self._undo_callback: Optional[Callable[[], object]] = None
         self._pending_duration_ms: int = 0
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
@@ -1509,7 +1548,7 @@ class UndoToastBar(QFrame):
     def show_toast(
         self,
         message: str,
-        undo_callback: Callable[[], None],
+        undo_callback: Callable[[], object],
         duration_ms: int = UNDO_TOAST_DURATION_MS,
     ) -> None:
         self._timer.stop()
@@ -1541,8 +1580,16 @@ class UndoToastBar(QFrame):
         if callback is None:
             self.dismiss()
             return False
-        self.dismiss()
-        callback()
+        self._timer.stop()
+        result = callback()
+        if result is False:
+            if self._undo_callback is callback:
+                self._pending_duration_ms = 0
+                self.setVisible(True)
+                self._timer.start(UNDO_TOAST_DURATION_MS)
+            return False
+        if self._undo_callback is callback:
+            self.dismiss()
         return True
 
     def dismiss(self) -> None:

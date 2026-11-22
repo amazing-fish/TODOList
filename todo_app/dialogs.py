@@ -28,6 +28,7 @@ from .constants import (
     REMINDER_OPTIONS_MAP,
     REMINDER_SECONDS_TO_TEXT_MAP,
 )
+from .scheduling import normalize_recurrence
 from .utils import get_icon
 from .theme import ThemeColors, get_theme_manager
 
@@ -219,6 +220,19 @@ class NotificationDialog(QDialog):
         row["text_label"].setText(str(todo_item.get("text", "无内容")))
         row["detail_label"].setText(self._format_due_text(todo_item))
         row["status_label"].setText("已到期" if row["is_due"] else "提前提醒")
+
+    def refresh_tasks_if_present(self, todos: list[dict]) -> None:
+        """若指定任务仍在当前提醒窗中，同步刷新其引用与展示文本（不新增行）。"""
+
+        for todo_item in todos:
+            todo_id_raw = todo_item.get("id")
+            if todo_id_raw is None:
+                continue
+            todo_id = int(todo_id_raw)
+            existing = self._task_rows.get(todo_id)
+            if existing is not None:
+                existing["todo_item"] = todo_item
+                self._update_task_row(todo_id)
 
     def _refresh_relative_times(self) -> None:
         current_time_utc = datetime.now(timezone.utc)
@@ -533,6 +547,9 @@ class TaskEditDialog(QDialog):
         self.time_edit: Optional[QTimeEdit] = None
         self._preserved_due_selection: Optional[tuple[str, str]] = None
         self._preserved_due_date_iso: Optional[str] = None
+        self._loaded_due_date_key: Optional[str] = None
+        self._loaded_recurrence: Optional[dict] = None
+        self._preserve_empty_weekly: bool = False
         self._theme_manager = get_theme_manager()
         self._palette: ThemeColors = self._theme_manager.current_palette
         self._theme_manager.theme_changed.connect(self._on_theme_changed)
@@ -637,10 +654,51 @@ class TaskEditDialog(QDialog):
         self.date_edit.setDisplayFormat("yyyy-MM-dd")
         self.date_edit.setCalendarPopup(True)
         self.date_edit.setMinimumDate(QDate(2000, 1, 1))
+        self.date_edit.setMaximumDate(QDate(9998, 12, 31))
         self.date_edit.setDate(QDate.currentDate())
         self.date_edit.dateChanged.connect(self._on_due_editor_changed)
         due_date_controls_layout.addWidget(self.date_edit, 1)
         due_date_layout.addWidget(self.due_date_controls_widget)
+
+        from PySide6.QtWidgets import QCheckBox, QComboBox
+
+        recurrence_row = QHBoxLayout()
+        recurrence_row.setContentsMargins(0, 4, 0, 0)
+        recurrence_row.setSpacing(8)
+        recurrence_row.addWidget(QLabel("重复规则:"))
+        self.recurrence_combo = QComboBox()
+        self.recurrence_combo.setObjectName("recurrenceCombo")
+        self.recurrence_combo.addItem("不重复", "none")
+        self.recurrence_combo.addItem("每天", "daily")
+        self.recurrence_combo.addItem("工作日", "weekdays")
+        self.recurrence_combo.addItem("每周", "weekly")
+        self.recurrence_combo.addItem("每月", "monthly")
+        self.recurrence_combo.addItem("每年", "yearly")
+        self.recurrence_combo.currentIndexChanged.connect(self._on_recurrence_combo_changed)
+        recurrence_row.addWidget(self.recurrence_combo, 1)
+
+        self.skip_weekends_checkbox = QCheckBox("跳过周末")
+        self.skip_weekends_checkbox.setObjectName("recurrenceSkipWeekends")
+        self.skip_weekends_checkbox.setVisible(False)
+        recurrence_row.addWidget(self.skip_weekends_checkbox)
+        due_date_layout.addLayout(recurrence_row)
+
+        self.weekly_days_widget = QWidget()
+        weekly_days_layout = QHBoxLayout(self.weekly_days_widget)
+        weekly_days_layout.setContentsMargins(0, 2, 0, 0)
+        weekly_days_layout.setSpacing(4)
+        self.weekly_day_buttons: list[QPushButton] = []
+        for idx, day_label in enumerate(("一", "二", "三", "四", "五", "六", "日")):
+            day_btn = QPushButton(day_label)
+            day_btn.setObjectName(f"weeklyDayButton_{idx}")
+            day_btn.setProperty("duePresetChip", True)
+            day_btn.setCheckable(True)
+            day_btn.clicked.connect(self._on_weekly_day_clicked)
+            weekly_days_layout.addWidget(day_btn)
+            self.weekly_day_buttons.append(day_btn)
+        weekly_days_layout.addStretch(1)
+        self.weekly_days_widget.setVisible(False)
+        due_date_layout.addWidget(self.weekly_days_widget)
 
         layout.addWidget(due_date_frame)
         self.toggle_due_date_controls(False)
@@ -720,6 +778,11 @@ class TaskEditDialog(QDialog):
                 border-color: {palette.accent};
                 color: {palette.accent};
             }}
+            QPushButton[duePresetChip="true"]:checked {{
+                background-color: {palette.accent};
+                color: {palette.inverse_text};
+                border-color: {palette.accent};
+            }}
             QDialogButtonBox QPushButton {{
                 background-color: {palette.accent};
                 color: {palette.inverse_text};
@@ -778,14 +841,154 @@ class TaskEditDialog(QDialog):
         self.reminder_combo.setCurrentText(
             REMINDER_SECONDS_TO_TEXT_MAP.get(self.todo_item.get("reminderOffset", 0), "到期时")
         )
+        self._loaded_due_date_key = (
+            self.date_edit.date().toString(Qt.DateFormat.ISODate)
+            if self.set_due_date_button.isChecked()
+            else None
+        )
+        self._populate_recurrence_fields(self.todo_item.get("recurrence"))
+
+    def _populate_recurrence_fields(self, raw_recurrence: object) -> None:
+        rule = normalize_recurrence(raw_recurrence)
+        self._loaded_recurrence = dict(rule) if rule is not None else None
+        self._preserve_empty_weekly = False
+        if rule is None or not self.set_due_date_button.isChecked():
+            self.recurrence_combo.blockSignals(True)
+            self.recurrence_combo.setCurrentIndex(0)
+            self.recurrence_combo.blockSignals(False)
+            self._sync_recurrence_controls()
+            return
+        freq = rule["frequency"]
+        idx = self.recurrence_combo.findData(freq)
+        self.recurrence_combo.blockSignals(True)
+        self.recurrence_combo.setCurrentIndex(max(idx, 0))
+        self.recurrence_combo.blockSignals(False)
+        if freq == "daily":
+            self.skip_weekends_checkbox.setChecked(bool(rule.get("skipWeekends", False)))
+        elif freq == "weekly":
+            raw_days = rule.get("weekdays") or []
+            self._preserve_empty_weekly = len(raw_days) == 0
+            selected = set(raw_days)
+            for day_idx, btn in enumerate(self.weekly_day_buttons):
+                btn.blockSignals(True)
+                btn.setChecked(day_idx in selected)
+                btn.blockSignals(False)
+        self._sync_recurrence_controls()
+
+    def _on_recurrence_combo_changed(self, *_args: object) -> None:
+        self._preserve_empty_weekly = False
+        self._sync_recurrence_controls()
+
+    def _on_weekly_day_clicked(self, *_args: object) -> None:
+        self._preserve_empty_weekly = False
+
+    def _sync_recurrence_controls(self, *_args: object) -> None:
+        has_due = self.set_due_date_button.isChecked()
+        freq = self.recurrence_combo.currentData() if has_due else "none"
+        self.recurrence_combo.setEnabled(has_due)
+        self.skip_weekends_checkbox.setVisible(has_due and freq == "daily")
+        self.weekly_days_widget.setVisible(has_due and freq == "weekly")
+        if has_due and freq == "weekly" and not any(btn.isChecked() for btn in self.weekly_day_buttons):
+            anchor_weekday = self.date_edit.date().dayOfWeek() - 1
+            if 0 <= anchor_weekday < len(self.weekly_day_buttons):
+                btn = self.weekly_day_buttons[anchor_weekday]
+                btn.blockSignals(True)
+                btn.setChecked(True)
+                btn.blockSignals(False)
+
+    def _serialize_recurrence(self) -> Optional[dict]:
+        if not self.set_due_date_button.isChecked():
+            return None
+        freq = self.recurrence_combo.currentData()
+        if not isinstance(freq, str) or freq == "none":
+            return None
+        qdate = self.date_edit.date()
+        current_selection = self._current_due_selection()
+        current_date_key = qdate.toString(Qt.DateFormat.ISODate)
+        loaded = self._loaded_recurrence
+        due_time_changed = (
+            self._preserved_due_selection is None
+            or current_selection[1] != self._preserved_due_selection[1]
+        )
+
+        result: Optional[dict] = None
+        if freq == "daily":
+            interval = (
+                int(loaded.get("interval", 1))
+                if loaded is not None and loaded.get("frequency") == "daily"
+                else 1
+            )
+            result = {
+                "frequency": "daily",
+                "interval": interval,
+                "skipWeekends": self.skip_weekends_checkbox.isChecked(),
+            }
+        elif freq == "weekdays":
+            result = {"frequency": "weekdays"}
+        elif freq == "weekly":
+            if self._preserve_empty_weekly:
+                days = []
+            else:
+                days = [idx for idx, btn in enumerate(self.weekly_day_buttons) if btn.isChecked()]
+                if not days:
+                    days = [qdate.dayOfWeek() - 1]
+            result = {"frequency": "weekly", "weekdays": days}
+        elif freq == "monthly":
+            if (
+                loaded is not None
+                and loaded.get("frequency") == "monthly"
+                and self._loaded_due_date_key == current_date_key
+                and "day" in loaded
+            ):
+                result = {"frequency": "monthly", "day": int(loaded["day"])}
+            else:
+                result = {"frequency": "monthly", "day": qdate.day()}
+        elif freq == "yearly":
+            if (
+                loaded is not None
+                and loaded.get("frequency") == "yearly"
+                and self._loaded_due_date_key == current_date_key
+                and "month" in loaded
+                and "day" in loaded
+            ):
+                result = {
+                    "frequency": "yearly",
+                    "month": int(loaded["month"]),
+                    "day": int(loaded["day"]),
+                }
+            else:
+                result = {"frequency": "yearly", "month": qdate.month(), "day": qdate.day()}
+
+        if result is None:
+            return None
+        if due_time_changed or self.todo_item is None:
+            result["anchorTime"] = self.time_edit.time().toString("HH:mm")
+        elif loaded is not None and loaded.get("anchorTime"):
+            result["anchorTime"] = loaded["anchorTime"]
+        return result
 
     def toggle_due_date_controls(self, checked: bool) -> None:
         self.due_date_controls_widget.setVisible(checked)
         self.reminder_combo.setEnabled(checked)
+        if not checked and hasattr(self, "recurrence_combo"):
+            self.recurrence_combo.setCurrentIndex(0)
+        if hasattr(self, "recurrence_combo"):
+            self._sync_recurrence_controls()
         self.set_due_date_button.setText("清除截止时间" if checked else "设置截止时间")
         self._refresh_due_warning()
 
     def _on_due_editor_changed(self, *_args: object) -> None:
+        if (
+            self._preserve_empty_weekly
+            and hasattr(self, "recurrence_combo")
+            and self.set_due_date_button.isChecked()
+            and self.recurrence_combo.currentData() == "weekly"
+        ):
+            anchor_weekday = self.date_edit.date().dayOfWeek() - 1
+            for idx, btn in enumerate(self.weekly_day_buttons):
+                btn.blockSignals(True)
+                btn.setChecked(idx == anchor_weekday)
+                btn.blockSignals(False)
         self._refresh_due_warning()
 
     def _apply_due_preset(self, preset_key: str) -> None:
@@ -886,6 +1089,7 @@ class TaskEditDialog(QDialog):
             "priority": self.priority_combo.currentText(),
             "dueDate": self._serialize_due_date(),
             "reminderOffset": REMINDER_OPTIONS_MAP.get(self.reminder_combo.currentText(), 0),
+            "recurrence": self._serialize_recurrence(),
         }
 
     def accept(self) -> None:  # type: ignore[override]

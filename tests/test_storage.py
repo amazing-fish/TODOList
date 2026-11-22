@@ -333,6 +333,20 @@ class StorageTest(unittest.TestCase):
         self.assertFalse(storage.get_last_save_status().healthy)
         self.assertTrue(storage.get_last_save_status().read_only)
 
+    def test_normalize_todo_list_regenerates_non_finite_and_bool_ids_without_aborting(self) -> None:
+        raw_items = [
+            {"id": float("inf"), "text": "浮点无穷大ID", "priority": "高"},
+            {"id": "Infinity", "text": "字符串无穷大ID", "priority": "低"},
+            {"id": True, "text": "布尔ID"},
+            {"id": 100, "text": "正常ID"},
+        ]
+        normalized = storage.normalize_todo_list(raw_items)
+        self.assertEqual(len(normalized), 4)
+        self.assertEqual([item["text"] for item in normalized], ["浮点无穷大ID", "字符串无穷大ID", "布尔ID", "正常ID"])
+        self.assertEqual(normalized[3]["id"], 100)
+        self.assertTrue(all(isinstance(item["id"], int) and not isinstance(item["id"], bool) for item in normalized))
+        self.assertEqual(len({item["id"] for item in normalized}), 4)
+
 
 if __name__ == "__main__":
     unittest.main()
