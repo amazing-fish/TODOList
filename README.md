@@ -138,7 +138,7 @@ macOS/Linux 使用 PyInstaller 时，需要将 `--add-data` 的分隔符从 `;` 
 `.github/workflows/build-exe.yml` 的当前规则：
 
 - 推送到 `main`、推送 `v*` 标签或手动触发 `workflow_dispatch` 时，在 Windows Runner 生成单文件 `TODOList.exe`。
-- 仅 `push` 到 `main` 使用固定并发组 `build-exe-main-preview`（取消旧的预览运行）并启用 `build/` workpath 缓存（不传 `--clean`）以加速增量构建；`v*` 标签和 `workflow_dispatch` 各自隔离并发并强制 `--clean --onefile` 干净打包。
+- 仅 `push` 到 `main` 的构建阶段使用独立并发组 `build-exe-main-preview-build`（取消旧的预览运行）并启用 `build/` workpath 缓存（不传 `--clean`）以加速增量构建；`v*` 标签和 `workflow_dispatch` 各自隔离构建并强制 `--clean --onefile` 干净打包；发布阶段统一通过非取消序列化锁 `build-exe-release-publish` 执行且在上传前校验标签提交与实际构建提交一致性。
 - 所有构建都在依赖安装前先校验 `todo_app/constants.py` 的 `APP_VERSION` 与标签一致性，上传保留 7 天的 Actions Artifact，并在 Step Summary 输出构建耗时、体积与 SHA-256。
 - `main` 的最新构建会按 `APP_VERSION` 更新可移动的预发布标签（如 `pre3.1.0`）并更新不作为 Latest 的 Pre-release。
 - `workflow_dispatch` 默认仅产出临时 Artifact（不改动标签或 Release）；仅当显式传入 `release_tag`、输入完全一致的 `confirm_release_tag` 且勾选 `publish_release=true` 时，才按原标签提交执行干净构建并幂等覆盖对应 Release 的 `TODOList.exe` 资产（不会移动任何 Git ref）。

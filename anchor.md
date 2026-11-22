@@ -6,7 +6,7 @@
 ## 项目速览
 - **定位**：基于 PySide6 的桌面待办事项管理工具，强调现代化视觉、提醒/延迟机制与轻量本地存储。
 - **入口**：`main.py` 调用 `todo_app.run()`，由 `ModernTodoAppWindow`（`todo_app/main_window.py`）驱动 UI 与业务流。
-- **运行**：开发环境可执行 `python main.py`；GitHub Actions 工作流 `tests.yml` 在所有 pull request 和推送到 `main` 时，以 Python 3.11、Qt offscreen 环境依次执行源码编译检查和完整 `unittest`。`build-exe.yml` 在手动触发、推送到 `main` 或推送 `v*` 标签时生成 Windows 单文件可执行程序并上传保留 7 天的临时 Artifact。`main` 推送使用独立并发组 `build-exe-main-preview`（仅 `main` 启用取消进行中与 `build/` 缓存）、更新可移动的 `pre<版本号>` 标签并发布 Pre-release；`v*` 标签与 `workflow_dispatch` 各自隔离并发且强制干净构建。安装依赖前先校验 `APP_VERSION` 与标签一致性；`workflow_dispatch` 仅在同时提供 `release_tag`、一致的 `confirm_release_tag` 且 `publish_release=true` 时才按既有标签提交幂等覆盖 Release 资产（绝不移动 Git ref）。
+- **运行**：开发环境可执行 `python main.py`；GitHub Actions 工作流 `tests.yml` 在所有 pull request 和推送到 `main` 时，以 Python 3.11、Qt offscreen 环境依次执行源码编译检查和完整 `unittest`。`build-exe.yml` 拆分为 `build` 与 `publish` 两段式作业：手动触发、推送到 `main` 或推送 `v*` 标签时按真实检出提交（`git rev-parse HEAD`）生成 Windows 单文件可执行程序并上传保留 7 天的临时 Artifact；`main` 构建使用 `build-exe-main-preview-build`（仅 `main` 启用取消进行中与 `build/` 缓存），而所有 Release 发布统一经过非取消序列化锁 `build-exe-release-publish` 并在上传前校验标签提交与实际构建 SHA 一致。安装依赖前先校验 `APP_VERSION` 与标签一致性；`workflow_dispatch` 显式限定 `refs/tags/<release_tag>` 检出且 `persist-credentials: false`，仅在同时提供一致的 `confirm_release_tag` 且 `publish_release=true` 时才幂等覆盖对应 Release 资产（保持历史 Latest 策略且绝不移动 Git ref）。
 - **应用身份**：`APP_NAME = "桌面待办事项"` 只用于用户可见名称，`APP_VERSION` 独立提供版本号；`QSettings` 固定使用 `MyProductiveApp / 桌面待办事项 v1` 历史命名空间，其中的 v1 仅为兼容键，修改前必须提供无损迁移方案。
 - **依赖要点**：`requirements.txt` 精确锁定 PySide6 运行依赖，`requirements-dev.txt` 在运行依赖之上精确锁定 `PyInstaller==6.21.0` 及其间接依赖闭合集（workflow 内禁止 `pip install --upgrade pip`）；应用使用 PySide6 GUI 组件与 `QSoundEffect` 播放提醒，并以 `todos.json` 做本地数据缓存。
 

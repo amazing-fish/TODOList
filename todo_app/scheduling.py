@@ -2,10 +2,24 @@
 from __future__ import annotations
 
 import calendar
+import math
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import Any
 
 _WEEKDAY_LABELS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+
+
+def _safe_int(value: Any, default: int) -> int:
+    """安全转换整数配置，拒收布尔与 Infinity/NaN 等非有限浮点。"""
+
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, float) and not math.isfinite(value):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
 
 
 def _parse_utc_datetime(value: object) -> datetime | None:
@@ -84,12 +98,7 @@ def normalize_recurrence(raw: Any) -> dict[str, Any] | None:
     frequency = frequency.strip().lower()
 
     if frequency == "daily":
-        interval_raw = raw.get("interval", 1)
-        try:
-            interval = int(interval_raw)
-        except (TypeError, ValueError):
-            interval = 1
-        interval = max(1, min(interval, 365))
+        interval = max(1, min(_safe_int(raw.get("interval", 1), 1), 365))
         return {
             "frequency": "daily",
             "interval": interval,
@@ -105,10 +114,7 @@ def normalize_recurrence(raw: Any) -> dict[str, Any] | None:
         if isinstance(raw_days, (list, tuple, set)):
             seen: set[int] = set()
             for item in raw_days:
-                try:
-                    day_idx = int(item)
-                except (TypeError, ValueError):
-                    continue
+                day_idx = _safe_int(item, -1)
                 if 0 <= day_idx <= 6 and day_idx not in seen:
                     seen.add(day_idx)
                     days.append(day_idx)
@@ -116,26 +122,14 @@ def normalize_recurrence(raw: Any) -> dict[str, Any] | None:
         return {"frequency": "weekly", "weekdays": days}
 
     if frequency == "monthly":
-        day_raw = raw.get("day", 1)
-        try:
-            day = int(day_raw)
-        except (TypeError, ValueError):
-            day = 1
-        day = max(1, min(day, 31))
+        day = max(1, min(_safe_int(raw.get("day", 1), 1), 31))
         return {"frequency": "monthly", "day": day}
 
     if frequency == "yearly":
-        try:
-            month = int(raw.get("month", 1))
-        except (TypeError, ValueError):
-            month = 1
-        try:
-            day = int(raw.get("day", 1))
-        except (TypeError, ValueError):
-            day = 1
-        month = max(1, min(month, 12))
+        month = max(1, min(_safe_int(raw.get("month", 1), 1), 12))
+        day_raw = _safe_int(raw.get("day", 1), 1)
         max_feb_or_month = 29 if month == 2 else calendar.monthrange(2024, month)[1]
-        day = max(1, min(day, max_feb_or_month))
+        day = max(1, min(day_raw, max_feb_or_month))
         return {"frequency": "yearly", "month": month, "day": day}
 
     return None
@@ -176,7 +170,12 @@ def _add_months_clamped(anchor_date: date, months_delta: int, anchor_day: int) -
     return date(target_year, target_month, min(anchor_day, max_day))
 
 
-def _combine_local(target_date: date, template_local: datetime) -> datetime:
+def _combine_local(
+    target_date: date,
+    template_local: datetime,
+    *,
+    resolve_system_dst: bool = False,
+) -> datetime:
     naive = datetime(
         target_date.year,
         target_date.month,
@@ -186,12 +185,19 @@ def _combine_local(target_date: date, template_local: datetime) -> datetime:
         template_local.second,
         template_local.microsecond,
     )
+    if resolve_system_dst:
+        return naive.astimezone()
     if template_local.tzinfo is None:
         return naive.replace(tzinfo=timezone.utc)
     return naive.replace(tzinfo=template_local.tzinfo)
 
 
-def _advance_once_local(current_local: datetime, rule: dict[str, Any]) -> datetime:
+def _advance_once_local(
+    current_local: datetime,
+    rule: dict[str, Any],
+    *,
+    resolve_system_dst: bool = False,
+) -> datetime:
     freq = rule["frequency"]
     current_date = current_local.date()
 
@@ -201,25 +207,33 @@ def _advance_once_local(current_local: datetime, rule: dict[str, Any]) -> dateti
         if rule.get("skipWeekends"):
             while next_date.weekday() >= 5:
                 next_date += timedelta(days=1)
-        return _combine_local(next_date, current_local)
+        return _combine_local(
+            next_date, current_local, resolve_system_dst=resolve_system_dst
+        )
 
     if freq == "weekdays":
         next_date = current_date + timedelta(days=1)
         while next_date.weekday() >= 5:
             next_date += timedelta(days=1)
-        return _combine_local(next_date, current_local)
+        return _combine_local(
+            next_date, current_local, resolve_system_dst=resolve_system_dst
+        )
 
     if freq == "weekly":
         allowed = rule.get("weekdays") or [current_date.weekday()]
         next_date = current_date + timedelta(days=1)
         while next_date.weekday() not in allowed:
             next_date += timedelta(days=1)
-        return _combine_local(next_date, current_local)
+        return _combine_local(
+            next_date, current_local, resolve_system_dst=resolve_system_dst
+        )
 
     if freq == "monthly":
         anchor_day = int(rule.get("day", current_date.day))
         next_date = _add_months_clamped(current_date, 1, anchor_day)
-        return _combine_local(next_date, current_local)
+        return _combine_local(
+            next_date, current_local, resolve_system_dst=resolve_system_dst
+        )
 
     if freq == "yearly":
         anchor_month = int(rule.get("month", current_date.month))
@@ -227,9 +241,15 @@ def _advance_once_local(current_local: datetime, rule: dict[str, Any]) -> dateti
         next_year = current_date.year + 1
         max_day = calendar.monthrange(next_year, anchor_month)[1]
         next_date = date(next_year, anchor_month, min(anchor_day, max_day))
-        return _combine_local(next_date, current_local)
+        return _combine_local(
+            next_date, current_local, resolve_system_dst=resolve_system_dst
+        )
 
-    return current_local + timedelta(days=1)
+    return _combine_local(
+        current_date + timedelta(days=1),
+        current_local,
+        resolve_system_dst=resolve_system_dst,
+    )
 
 
 def calculate_next_due_utc(
@@ -251,30 +271,47 @@ def calculate_next_due_utc(
         ref_utc = reference_utc.astimezone(timezone.utc)
 
     due_utc = _parse_utc_datetime(due_date_iso) or ref_utc
-    resolved_tz = target_tz if target_tz is not None else datetime.now().astimezone().tzinfo
-    if resolved_tz is None:
-        resolved_tz = timezone.utc
+    resolve_system_dst = target_tz is None
+    if resolve_system_dst:
+        candidate_local = due_utc.astimezone()
+        ref_local_date = ref_utc.astimezone().date()
+    else:
+        candidate_local = due_utc.astimezone(target_tz)
+        ref_local_date = ref_utc.astimezone(target_tz).date()
 
-    candidate_local = due_utc.astimezone(resolved_tz)
-
-    # 针对多天离线快速跳跃，避免极端间隔逐天循环
+    # 针对多天/多年离线快速跳跃，确保不落回逾期日期
     if rule["frequency"] == "daily" and not rule.get("skipWeekends"):
         interval = int(rule["interval"])
         if candidate_local.astimezone(timezone.utc) <= ref_utc:
-            days_gap = max((ref_utc.astimezone(resolved_tz).date() - candidate_local.date()).days, 0)
+            days_gap = max((ref_local_date - candidate_local.date()).days, 0)
             steps = days_gap // interval
             if steps > 1:
                 jumped_date = candidate_local.date() + timedelta(days=(steps - 1) * interval)
-                candidate_local = _combine_local(jumped_date, candidate_local)
+                candidate_local = _combine_local(
+                    jumped_date, candidate_local, resolve_system_dst=resolve_system_dst
+                )
+    elif rule["frequency"] in ("weekdays", "weekly") or (
+        rule["frequency"] == "daily" and rule.get("skipWeekends") and int(rule["interval"]) == 1
+    ):
+        if candidate_local.astimezone(timezone.utc) <= ref_utc:
+            days_gap = max((ref_local_date - candidate_local.date()).days, 0)
+            weeks = days_gap // 7
+            if weeks > 1:
+                jumped_date = candidate_local.date() + timedelta(days=(weeks - 1) * 7)
+                candidate_local = _combine_local(
+                    jumped_date, candidate_local, resolve_system_dst=resolve_system_dst
+                )
     elif rule["frequency"] == "yearly":
-        ref_year = ref_utc.astimezone(resolved_tz).year
-        if ref_year - candidate_local.year > 1:
-            jumped_year = ref_year - 1
+        if ref_local_date.year - candidate_local.year > 1:
+            jumped_year = ref_local_date.year - 1
             m = int(rule["month"])
             d = min(int(rule["day"]), calendar.monthrange(jumped_year, m)[1])
-            candidate_local = _combine_local(date(jumped_year, m, d), candidate_local)
+            candidate_local = _combine_local(
+                date(jumped_year, m, d),
+                candidate_local,
+                resolve_system_dst=resolve_system_dst,
+            )
     elif rule["frequency"] == "monthly":
-        ref_local_date = ref_utc.astimezone(resolved_tz).date()
         months_gap = (ref_local_date.year - candidate_local.year) * 12 + (
             ref_local_date.month - candidate_local.month
         )
@@ -282,14 +319,21 @@ def calculate_next_due_utc(
             jumped_date = _add_months_clamped(
                 candidate_local.date(), months_gap - 1, int(rule["day"])
             )
-            candidate_local = _combine_local(jumped_date, candidate_local)
+            candidate_local = _combine_local(
+                jumped_date, candidate_local, resolve_system_dst=resolve_system_dst
+            )
 
-    for _ in range(1024):
-        candidate_local = _advance_once_local(candidate_local, rule)
+    for _ in range(4096):
+        candidate_local = _advance_once_local(
+            candidate_local, rule, resolve_system_dst=resolve_system_dst
+        )
         if candidate_local.astimezone(timezone.utc) > ref_utc:
             break
 
-    return candidate_local.astimezone(timezone.utc).isoformat()
+    candidate_utc = candidate_local.astimezone(timezone.utc)
+    if candidate_utc <= ref_utc:
+        raise ValueError("无法将循环任务推进至晚于当前时刻的下一次截止时间")
+    return candidate_utc.isoformat()
 
 
 def build_recurrence_completion_fields(

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from todo_app.autostart import (
     build_autostart_command,
@@ -245,10 +245,105 @@ class SettingsAndWindowWorkflowTests(unittest.TestCase):
                     data_file=export_path,
                     backup_file=backup_path,
                 )
+                # 禁止覆盖正在使用的数据文件及备份
+                with self.assertRaises(ValueError):
+                    window.export_todos_to_file(export_path)
+                with self.assertRaises(ValueError):
+                    window.export_todos_to_file(backup_path)
+
+                # 只读保护模式下仍允许导出到独立路径，但拒绝导入和清理
+                alt_export = Path(tmp_dir) / "safe-export.json"
+                self.assertEqual(window.export_todos_to_file(alt_export), 2)
                 with self.assertRaises(RuntimeError):
                     window.clear_completed_todos()
                 with self.assertRaises(RuntimeError):
                     window.import_todos_from_file(export_path)
+
+    def test_import_validation_persist_failure_rollback_and_scoped_undo(self) -> None:
+        todos = [
+            {
+                "id": 1,
+                "text": "已完成任务",
+                "priority": "低",
+                "dueDate": None,
+                "reminderOffset": -1,
+                "completed": True,
+                "createdAt": "2026-04-01T00:00:00+00:00",
+            },
+            {
+                "id": 2,
+                "text": "保留任务",
+                "priority": "高",
+                "dueDate": None,
+                "reminderOffset": -1,
+                "completed": False,
+                "createdAt": "2026-04-02T00:00:00+00:00",
+                "notifiedForDue": False,
+            },
+        ]
+        window = self._create_window(todos)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bad_json = Path(tmp_dir) / "bad.json"
+            bad_json.write_text(json.dumps([{"id": 9, "text": ["not-a-str"]}]), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                window.import_todos_from_file(bad_json)
+            self.assertEqual(len(window.todos), 2)
+
+            with patch.object(window, "_persist_todos", return_value=False):
+                with self.assertRaises(RuntimeError):
+                    window.clear_completed_todos()
+                self.assertEqual(len(window.todos), 2)
+
+            with patch.object(window, "_persist_todos", return_value=True):
+                window.clear_completed_todos()
+                # 清理期间另一条任务的通知标记发生变化，撤销清理不得覆盖它
+                window.todos[0]["notifiedForDue"] = True
+                window.undo_toast_bar.trigger_undo()
+                preserved = next(t for t in window.todos if t["id"] == 2)
+                self.assertTrue(preserved["notifiedForDue"])
+
+    def test_dnd_expiration_updates_open_settings_dialog_and_prompts_flush_undo(self) -> None:
+        window = self._create_window(
+            [
+                {
+                    "id": 1,
+                    "text": "已完成测试",
+                    "priority": "中",
+                    "dueDate": None,
+                    "reminderOffset": -1,
+                    "completed": True,
+                    "createdAt": "2026-04-01T00:00:00+00:00",
+                }
+            ]
+        )
+        window.enable_dnd_for_one_hour()
+        dlg = SettingsDialog(
+            dnd_enabled=True,
+            dnd_status_text=window.dnd_status_text(),
+            completed_count=1,
+            parent=window,
+        )
+        self.addCleanup(dlg.deleteLater)
+        window._settings_dialog = dlg
+        window._dnd_until_utc = datetime.now(timezone.utc) - timedelta(seconds=1)
+        self.assertFalse(window.is_dnd_active())
+        self.assertFalse(dlg.dnd_checkbox.isChecked())
+        self.assertIn("未开启", dlg.dnd_status_label.text())
+        window._settings_dialog = None
+
+        with (
+            patch.object(window, "_persist_todos", return_value=True),
+            patch(
+                "todo_app.main_window.QMessageBox.question",
+                return_value=QMessageBox.StandardButton.Yes,
+            ),
+        ):
+            dlg2 = SettingsDialog(completed_count=1, parent=window)
+            self.addCleanup(dlg2.deleteLater)
+            window._prompt_clear_completed_todos(dlg2)
+            self.assertIsNotNone(window._deferred_undo_toast)
+            window._flush_deferred_undo_toast()
+            self.assertTrue(window.undo_toast_bar.has_active_undo())
 
     def test_narrow_320px_header_controls_fit_without_clipping_buttons(self) -> None:
         window = self._create_window([])
