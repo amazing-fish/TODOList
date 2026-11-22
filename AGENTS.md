@@ -46,7 +46,7 @@
    - 对话框改动验证新增或编辑任务；
    - 提醒、推迟或托盘改动验证对应生命周期；
    - 主题或资源改动验证浅色、深色主题及资源降级行为。
-6. 构建工作流、资源路径或 PyInstaller 参数发生变化时，执行相应打包验证；环境不具备时在 PR 中明确说明。
+6. 构建工作流、资源路径或 PyInstaller 参数发生变化时，执行相应打包验证；环境不具备时在 PR 中明确说明。若某次 `v*` 正式发布打包失败，可通过 GitHub Actions `build-exe.yml` 的 `workflow_dispatch` 传入相同的 `release_tag`、`confirm_release_tag` 与 `publish_release=true` 幂等重跑并补传 `TODOList.exe`，严禁移动既有 `v*` 标签指针。
 7. 执行 `git diff --check`，确认没有空白错误或意外格式化。
 
 ## 本地数据约束

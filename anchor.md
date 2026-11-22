@@ -6,9 +6,9 @@
 ## 项目速览
 - **定位**：基于 PySide6 的桌面待办事项管理工具，强调现代化视觉、提醒/延迟机制与轻量本地存储。
 - **入口**：`main.py` 调用 `todo_app.run()`，由 `ModernTodoAppWindow`（`todo_app/main_window.py`）驱动 UI 与业务流。
-- **运行**：开发环境可执行 `python main.py`；GitHub Actions 工作流 `tests.yml` 在所有 pull request 和推送到 `main` 时，以 Python 3.11、Qt offscreen 环境依次执行源码编译检查和完整 `unittest`。`build-exe.yml` 在手动触发、推送到 `main` 或推送 `v*` 标签时生成 Windows 单文件可执行程序并上传保留 7 天的临时 Artifact。`main` 推送还会根据 `APP_VERSION` 移动对应的 `pre<版本号>` 标签并更新不作为 Latest 的 Pre-release；手动构建不修改标签或 Release；只有显式推送且不可移动的 `v*` 标签才创建或更新正式 Release。
+- **运行**：开发环境可执行 `python main.py`；GitHub Actions 工作流 `tests.yml` 在所有 pull request 和推送到 `main` 时，以 Python 3.11、Qt offscreen 环境依次执行源码编译检查和完整 `unittest`。`build-exe.yml` 在手动触发、推送到 `main` 或推送 `v*` 标签时生成 Windows 单文件可执行程序并上传保留 7 天的临时 Artifact。`main` 推送使用独立并发组 `build-exe-main-preview`（仅 `main` 启用取消进行中与 `build/` 缓存）、更新可移动的 `pre<版本号>` 标签并发布 Pre-release；`v*` 标签与 `workflow_dispatch` 各自隔离并发且强制干净构建。安装依赖前先校验 `APP_VERSION` 与标签一致性；`workflow_dispatch` 仅在同时提供 `release_tag`、一致的 `confirm_release_tag` 且 `publish_release=true` 时才按既有标签提交幂等覆盖 Release 资产（绝不移动 Git ref）。
 - **应用身份**：`APP_NAME = "桌面待办事项"` 只用于用户可见名称，`APP_VERSION` 独立提供版本号；`QSettings` 固定使用 `MyProductiveApp / 桌面待办事项 v1` 历史命名空间，其中的 v1 仅为兼容键，修改前必须提供无损迁移方案。
-- **依赖要点**：`requirements.txt` 精确锁定 PySide6 运行依赖，`requirements-dev.txt` 在运行依赖之上精确锁定 PyInstaller；应用使用 PySide6 GUI 组件与 `QSoundEffect` 播放提醒，并以 `todos.json` 做本地数据缓存。
+- **依赖要点**：`requirements.txt` 精确锁定 PySide6 运行依赖，`requirements-dev.txt` 在运行依赖之上精确锁定 `PyInstaller==6.21.0` 及其间接依赖闭合集（workflow 内禁止 `pip install --upgrade pip`）；应用使用 PySide6 GUI 组件与 `QSoundEffect` 播放提醒，并以 `todos.json` 做本地数据缓存。
 
 ## 技术路径
 - **启动链路**：`main.py` → `todo_app/app.py::run`（配置轮转文件日志、注册应用字体、通过 `SingleInstanceGuard` 获取单实例互斥锁）→ `todo_app/main_window.py::ModernTodoAppWindow`。
@@ -22,14 +22,16 @@
 - `todo_app/fonts.py`：注册内置 HarmonyOS Sans SC 字体，失败时安全回退系统 UI 字体。
 - `todo_app/logging_config.py`：在数据目录 `logs/todolist.log` 配置 UTF-8 轮转文件日志。
 - `todo_app/single_instance.py`：基于 `QLocalServer`/`QLocalSocket` 的单实例互斥锁与外部启动唤醒。
-- `todo_app/main_window.py`：主窗口、过滤排序逻辑、系统托盘、提醒计时器、损坏提示横幅、状态保存。
-- `todo_app/dialogs.py`：任务编辑对话框与非抢焦置顶提醒弹窗，负责校验输入、配置提醒与打盹选项。
-- `todo_app/scheduling.py`：提醒、推迟与编辑保存时的调度状态规则，保持 UI 默认值与存储状态一致。
+- `todo_app/autostart.py`：Windows `HKCU\...\Run` 开机自启注册表适配层（键名 `TODOListDesktop`）及注入测试后端。
+- `todo_app/main_window.py`：主窗口、过滤排序逻辑、系统托盘（含勿扰开关与设置入口）、提醒与勿扰计时、重复推进、导入导出及状态保存。
+- `todo_app/settings_dialog.py`：轻量设置与数据工具对话框（主题偏好、自启、提示音、勿扰、清理已完成与 JSON 导入/导出）。
+- `todo_app/dialogs.py`：任务编辑对话框（含周期规则编辑器与快捷键）与非抢焦置顶提醒弹窗。
+- `todo_app/scheduling.py`：提醒、推迟、编辑保存以及周期任务下一次截止计算的调度规则。
 - `todo_app/layout.py`：以纯函数集中计算任务卡片区域宽高、挤压优先级与详情浮层尺寸/位置；Qt 边界只提供测量值并应用结果。
-- `todo_app/widgets.py`：待办卡片视图与交互按钮，消费统一布局结果并响应主题变化、完成状态切换、计时显示。
+- `todo_app/widgets.py`：待办卡片视图（含 `↻` 周期徽章与右键“结束重复并完成”）与交互按钮，消费统一布局结果。
 - `todo_app/scrolling.py`：列表滚轮按字体行高缓动，协调触控板输入与拖动、键盘和列表更新的直接定位。
-- `todo_app/storage.py`：JSON 数据的读写与迁移，保证旧数据补全字段，并负责原子保存、单份备份、健康状态记录与损坏隔离恢复。
-- `todo_app/theme.py`：主题检测与切换，提供 `ThemeManager` 单例。
+- `todo_app/storage.py`：JSON 数据的读写与迁移，保证旧数据补全字段（含规范化 `recurrence`），并负责原子保存、单份备份、健康状态记录与损坏隔离恢复。
+- `todo_app/theme.py`：主题检测与切换，支持 `ThemePreference`（系统/浅色/深色）并由 `ThemeManager` 单例广播。
 - `todo_app/utils.py`：图标加载、声音播放、文本截断等通用工具。
 - `todo_app/constants.py`：项目常量、主题色板、资源路径。
 - `todo_app/paths.py`：基础路径与 `todos.json` 存放位置。
@@ -41,7 +43,7 @@
   - `feature` → 提升次版本号。
   - `bugfix` → 提升修订号。
 - 仅文档与注释变更默认不触发版本号递增，除非影响发布说明或行为约定。
-- 当前约定版本：`v3.0.0`。
+- 当前约定版本：`v3.1.0`。
 
 ## 数据约束
 - 所有待办保存在项目根目录下的 `todos.json`，结构为列表，元素为字典；打包版运行时会改存至用户数据目录（Windows `%APPDATA%\TODOList`，其他平台 `~/.todolist/`）。运行日志保存在同一数据目录的 `logs/todolist.log`（最多 1MB × 3 份轮转）。
@@ -54,6 +56,7 @@
   - `completed`（bool）、`priority`（"高"|"中"|"低"）、`dueDate`（ISO8601 str 或 `None`）。
   - `reminderOffset`（int 秒，-1 表示不提醒）、`snoozeUntil`、`lastNotifiedAt`（ISO8601 str 或 `None`）。
   - `notifiedForReminder`、`notifiedForDue`（bool）用于提醒状态去重。
+  - `recurrence`（dict 或 `None`）重复规则，经 `normalize_recurrence` 规范化，按频率类型包含 `frequency`（`"daily" | "weekdays" | "weekly" | "monthly" | "yearly"`）、`interval`（daily 正整数）、`skipWeekends`（daily bool）、`weekdays`（weekly `0..6` 升序去重列表）、`day`（monthly/yearly 1..31）与 `month`（yearly 1..12）；旧数据缺失该键时保持原样，读取端等价视作 `None`。
 - 修改字段或新增元数据时：同步更新 `storage.py` 的迁移逻辑、`TaskEditDialog` 的表单、`TodoItemWidget` 的展示，以及锚点此处的说明。
 
 ## 资源约束
@@ -86,8 +89,11 @@
 - 记录要求：时间倒序、单行摘要、包含变更类型（refactor/feature/bugfix）与版本号（若触发版本变更）。
 - 若确认无变更，提交说明需写明“锚点已复盘，无需更新”。
 - **主窗口顶栏与快录/Pin**：顶栏在 `filter_combo`/`sort_combo` 独占一行契约之上提供未完成/逾期动态计数（同步至托盘 tooltip）、窗口置顶 Pin（持久化 `windowAlwaysOnTop`）、内联快录栏（`Enter` 直建受只读损坏保护，`Shift+Enter` 预填打开表单）与实时搜索框（`Ctrl+F` / `Esc`）。
+- **主题与设置**：支持 `ThemePreference`（`system | light | dark`）覆盖或跟随系统主题，连同 `soundEnabled`、`dndEnabled`、`dndUntilUtc` 一并持久化在既有 `QSettings` 命名空间（安全类型强转防非法/空值污染）；Windows 开机自启写入 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\TODOListDesktop`。勿扰期间 `tick_update` 跳过通知检查且不写入 `notifiedFor*` 标记，到期后自动恢复；右上角“设置”弹窗（`Ctrl+,`）与托盘菜单提供统一入口。
+- **周期任务闭环**：勾选或通知完成周期任务时不置为已完成，而是按本地日历推进 `dueDate` 至下一有效时刻（跳过周末、指定周几或月末钳位）并清空 `snoozeUntil` 与通知标记；同时提供 5 秒 Undo Toast 回滚，并在卡片右键菜单保留“结束重复并完成”。
 
 ## 最近约定变更
+- 2026-11-22：feature，完成 Phase 3 工作流、周期任务、设置中心与构建发布韧性（Refs `#101` `#95` `#79` `#80`）：新增 `recurrence` 字段与周期推进/月末对齐/结束重复逻辑；新增 `SettingsDialog`、主题模式覆盖、`autostart.py` Windows 注册表开机自启、提示音开关、手动/1 小时勿扰及托盘入口、清理已完成与 JSON 导入/导出（5 秒撤销与只读保护）；`requirements-dev.txt` 锁定 PyInstaller 间接依赖，重构 `build-exe.yml` 隔离并发与缓存并支持带二次确认的手动补发与摘要输出，版本按 feature 规则递增至 `v3.1.0`。
 - 2026-11-22：refactor，推进 Phase 2 信息架构与交互重构：卡片改为二维双行布局并支持双击/右键菜单与可选中悬停详情浮层；主窗口新增顶栏动态统计、Pin 置顶、内联快录栏、实时搜索与一键重置、完整快捷键及底部 5 秒 Undo Toast；编辑表单增加时间预设与 `Ctrl+Enter` 保存并取消过去时间强拦截；通知弹窗拆分为中性“知道了”（保留 `dueDate`）与“编辑”，版本按 refactor 规则升级至 `v3.0.0`。
 - 2026-11-22：feature，新增单实例锁与外部唤醒、数据目录轮转日志、损坏只读顶部警告横幅与安全隔离恢复；修复“截止日期(远->近)”排序与已完成沉底，“今天到期”纳入逾期并新增“已逾期”及筛选排序持久化；提前提醒推迟保留原截止时间；补齐内置提醒 WAV 音效并将提醒窗改为非抢焦置顶且解耦主窗口强制唤起，版本更新至 `v2.2.0`。
 - 2026-09-07：bugfix，普通 Tick 只刷新与视口相交的卡片，隐藏/最小化窗口跳过计时呈现；滚动、布局和窗口恢复立即刷新可见计时，保留全部任务提醒扫描与差量数据协调，版本更新至 `v2.1.8`。

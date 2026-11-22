@@ -2,6 +2,22 @@ name: Windows 可执行文件打包
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '可选：目标标签（如 v3.1.0 或 pre3.1.0，用于复现或补发该标签对应的构建）'
+        required: false
+        type: string
+        default: ''
+      confirm_release_tag:
+        description: '当开启 publish_release 时，必须再次输入完全相同的 release_tag 以防误发布'
+        required: false
+        type: string
+        default: ''
+      publish_release:
+        description: '是否将本次构建的 TODOList.exe 幂等上传覆盖至对应 Release'
+        required: false
+        type: boolean
+        default: false
   push:
     branches:
       - main
@@ -11,13 +27,93 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'build-exe-main-preview' || format('build-exe-{0}-{1}', github.event_name, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
 jobs:
   build:
     runs-on: windows-latest
 
     steps:
+      - name: 校验手动触发参数
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        env:
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+          INPUT_CONFIRM_RELEASE_TAG: ${{ inputs.confirm_release_tag }}
+          INPUT_PUBLISH_RELEASE: ${{ inputs.publish_release }}
+        run: |
+          $releaseTag = "$env:INPUT_RELEASE_TAG".Trim()
+          $confirmTag = "$env:INPUT_CONFIRM_RELEASE_TAG".Trim()
+          $publishRelease = "$env:INPUT_PUBLISH_RELEASE".ToLowerInvariant() -eq "true"
+
+          if ($releaseTag -and $releaseTag -notmatch '^(v|pre)\d+\.\d+\.\d+$') {
+            throw "无效的 release_tag '$releaseTag'，仅支持 vX.Y.Z 或 preX.Y.Z 格式。"
+          }
+          if ($publishRelease) {
+            if (-not $releaseTag) {
+              throw "开启 publish_release 时必须填写 release_tag。"
+            }
+            if ($confirmTag -cne $releaseTag) {
+              throw "二次确认失败：confirm_release_tag ('$confirmTag') 与 release_tag ('$releaseTag') 不一致。"
+            }
+          }
+
       - name: 检出代码
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag != '' && inputs.release_tag || '' }}
+
+      - name: 校验版本与生成构建计划
+        id: build_plan
+        shell: pwsh
+        env:
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+          GH_REF_NAME: ${{ github.ref_name }}
+          GH_REF: ${{ github.ref }}
+        run: |
+          $versionContent = Get-Content -LiteralPath "todo_app/constants.py" -Raw
+          if ($versionContent -notmatch 'APP_VERSION\s*=\s*"(?<version>\d+\.\d+\.\d+)"') {
+            throw "无法从 todo_app/constants.py 解析 APP_VERSION"
+          }
+          $appVersion = $Matches.version
+          $eventName = "$env:GH_EVENT_NAME"
+          $refName = "$env:GH_REF_NAME"
+          $gitRef = "$env:GH_REF"
+          $releaseTag = "$env:INPUT_RELEASE_TAG".Trim()
+
+          $cleanBuild = "true"
+          $workpathCache = "false"
+          $isPrerelease = "false"
+          $targetTag = ""
+
+          if ($eventName -eq "push" -and $gitRef -eq "refs/heads/main") {
+            $cleanBuild = "false"
+            $workpathCache = "true"
+            $isPrerelease = "true"
+            $targetTag = "pre$appVersion"
+          } elseif ($eventName -eq "push" -and $gitRef -like "refs/tags/v*") {
+            $expectedTag = "v$appVersion"
+            if ($refName -cne $expectedTag) {
+              throw "标签名 ($refName) 与 todo_app/constants.py 中的 APP_VERSION ($expectedTag) 不一致，请先修正版本号后重新打标。"
+            }
+            $targetTag = $refName
+          } elseif ($eventName -eq "workflow_dispatch" -and $releaseTag) {
+            if ($releaseTag -ceq "pre$appVersion") {
+              $isPrerelease = "true"
+            } elseif ($releaseTag -cne "v$appVersion") {
+              throw "所选标签 ($releaseTag) 与该提交的 APP_VERSION ($appVersion) 不匹配。"
+            }
+            $targetTag = $releaseTag
+          }
+
+          "app_version=$appVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "clean_build=$cleanBuild" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "workpath_cache=$workpathCache" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "is_prerelease=$isPrerelease" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "target_tag=$targetTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: 设置 Python
         uses: actions/setup-python@v5
@@ -25,6 +121,7 @@ jobs:
           python-version: '3.11'
 
       - name: 配置 pip 缓存目录
+        shell: pwsh
         run: |
           $cacheDir = Join-Path $env:RUNNER_TEMP "pip-cache"
           New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
@@ -39,30 +136,77 @@ jobs:
             ${{ runner.os }}-pip-
 
       - name: 安装依赖
+        shell: pwsh
         run: |
-          python -m pip install --upgrade pip
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
           python -m pip install -r requirements-dev.txt
+          $sw.Stop()
+          Write-Host ("依赖安装耗时: {0:F1}s" -f $sw.Elapsed.TotalSeconds)
+
+      - name: 缓存 PyInstaller 构建目录（仅 main 预览构建）
+        if: steps.build_plan.outputs.workpath_cache == 'true'
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: ${{ runner.os }}-pyinstaller-build-${{ hashFiles('requirements*.txt', 'main.py', 'todo_app/**/*.py', 'assets/**/*') }}
+          restore-keys: |
+            ${{ runner.os }}-pyinstaller-build-
 
       - name: 构建可执行文件
+        id: pyinstaller_build
+        shell: pwsh
+        env:
+          CLEAN_BUILD: ${{ steps.build_plan.outputs.clean_build }}
         run: |
-          pyinstaller main.py `
-            --name TODOList `
-            --noconsole `
-            --clean `
-            --onefile `
-            --add-data "assets;assets" `
-            --hidden-import PySide6.QtSvg `
-            --hidden-import PySide6.QtMultimedia
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+          if ("$env:CLEAN_BUILD" -eq "true") {
+            pyinstaller main.py `
+              --name TODOList `
+              --noconsole `
+              --clean `
+              --onefile `
+              --add-data "assets;assets" `
+              --hidden-import PySide6.QtSvg `
+              --hidden-import PySide6.QtMultimedia
+          } else {
+            pyinstaller main.py `
+              --name TODOList `
+              --noconsole `
+              --onefile `
+              --add-data "assets;assets" `
+              --hidden-import PySide6.QtSvg `
+              --hidden-import PySide6.QtMultimedia
+          }
+          if ($LASTEXITCODE -ne 0) {
+            throw "PyInstaller 构建失败，退出码: $LASTEXITCODE"
+          }
+          $sw.Stop()
+          $exePath = "dist/TODOList.exe"
+          if (-not (Test-Path -LiteralPath $exePath)) {
+            throw "未找到构建产物 $exePath"
+          }
+          $sha256 = (Get-FileHash -LiteralPath $exePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $sizeMb = [Math]::Round((Get-Item -LiteralPath $exePath).Length / 1MB, 2)
+          "duration_sec=$([Math]::Round($sw.Elapsed.TotalSeconds, 1))" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "sha256=$sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "size_mb=$sizeMb" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: 生成构建产物名称
         id: artifact
         shell: pwsh
+        env:
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+          GH_EVENT_NAME: ${{ github.event_name }}
+          GH_REF: ${{ github.ref }}
+          GH_REF_NAME: ${{ github.ref_name }}
+          GH_SHA: ${{ github.sha }}
         run: |
-          $shortSha = "${{ github.sha }}".Substring(0, 7)
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $source = "manual"
-          } elseif ("${{ github.ref }}" -like "refs/tags/v*") {
-            $source = "${{ github.ref_name }}"
+          $shortSha = "$env:GH_SHA".Substring(0, 7)
+          $releaseTag = "$env:INPUT_RELEASE_TAG".Trim()
+          if ("$env:GH_EVENT_NAME" -eq "workflow_dispatch") {
+            $source = if ($releaseTag) { "manual-$releaseTag" } else { "manual" }
+          } elseif ("$env:GH_REF" -like "refs/tags/v*") {
+            $source = "$env:GH_REF_NAME"
           } else {
             $source = "main"
           }
@@ -85,15 +229,6 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or -not $remoteLine) {
             throw "无法读取远端 main 分支提交"
           }
-          $versionContent = Get-Content -LiteralPath "todo_app/constants.py" -Raw
-          if ($versionContent -notmatch 'APP_VERSION\s*=\s*"(?<version>\d+\.\d+\.\d+)"') {
-            throw "无法从 todo_app/constants.py 解析 APP_VERSION"
-          }
-          $appVersion = $Matches.version
-          $releaseTag = "pre$appVersion"
-          "app_version=$appVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "release_tag=$releaseTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
           $latestMainSha = ($remoteLine -split '\s+')[0]
           $shouldPublish = $latestMainSha -eq $env:GITHUB_SHA
           "should_publish=$($shouldPublish.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
@@ -104,26 +239,30 @@ jobs:
       - name: 更新主分支预发布标签
         if: steps.main_preview.outputs.should_publish == 'true'
         shell: pwsh
+        env:
+          TARGET_TAG: ${{ steps.build_plan.outputs.target_tag }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          $releaseTag = "${{ steps.main_preview.outputs.release_tag }}"
+          $releaseTag = "$env:TARGET_TAG"
           git tag -f $releaseTag $env:GITHUB_SHA
           git push origin "refs/tags/$releaseTag" --force
 
       - name: 创建或更新主分支预发布
+        id: release_main_preview
         if: steps.main_preview.outputs.should_publish == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.main_preview.outputs.release_tag }}
+          tag_name: ${{ steps.build_plan.outputs.target_tag }}
           target_commitish: ${{ github.sha }}
-          name: TODOList Preview ${{ steps.main_preview.outputs.app_version }}
+          name: TODOList Preview ${{ steps.build_plan.outputs.app_version }}
           prerelease: true
           make_latest: false
           files: dist/TODOList.exe
           overwrite_files: true
 
       - name: 创建或更新正式发布
+        id: release_tag_push
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
@@ -131,3 +270,48 @@ jobs:
           target_commitish: ${{ github.sha }}
           files: dist/TODOList.exe
           overwrite_files: true
+
+      - name: 补发或修复指定 Release 资产
+        id: release_manual_backfill
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ steps.build_plan.outputs.is_prerelease == 'true' && format('TODOList Preview {0}', steps.build_plan.outputs.app_version) || inputs.release_tag }}
+          prerelease: ${{ steps.build_plan.outputs.is_prerelease }}
+          make_latest: ${{ steps.build_plan.outputs.is_prerelease == 'true' && 'false' || 'true' }}
+          files: dist/TODOList.exe
+          overwrite_files: true
+
+      - name: 写入构建摘要
+        if: always()
+        shell: pwsh
+        env:
+          GH_EVENT_NAME: ${{ github.event_name }}
+          APP_VERSION: ${{ steps.build_plan.outputs.app_version }}
+          TARGET_TAG: ${{ steps.build_plan.outputs.target_tag }}
+          CLEAN_BUILD: ${{ steps.build_plan.outputs.clean_build }}
+          BUILD_DURATION: ${{ steps.pyinstaller_build.outputs.duration_sec }}
+          BUILD_SIZE_MB: ${{ steps.pyinstaller_build.outputs.size_mb }}
+          BUILD_SHA256: ${{ steps.pyinstaller_build.outputs.sha256 }}
+          RELEASE_URL: ${{ steps.release_main_preview.outputs.url || steps.release_tag_push.outputs.url || steps.release_manual_backfill.outputs.url }}
+        run: |
+          $targetTag = if ($env:TARGET_TAG) { $env:TARGET_TAG } else { "无（仅产出 Workflow Artifact）" }
+          $duration = if ($env:BUILD_DURATION) { "$($env:BUILD_DURATION)s" } else { "-" }
+          $sizeMb = if ($env:BUILD_SIZE_MB) { "$($env:BUILD_SIZE_MB) MB" } else { "-" }
+          $sha256 = if ($env:BUILD_SHA256) { $env:BUILD_SHA256 } else { "-" }
+          $lines = @(
+            "### Windows 打包摘要",
+            "- 触发方式: ``$($env:GH_EVENT_NAME)``",
+            "- 应用版本: ``v$($env:APP_VERSION)``",
+            "- 目标标签: ``$targetTag``",
+            "- Clean 构建: ``$($env:CLEAN_BUILD)``",
+            "- 打包耗时: ``$duration``",
+            "- 产物大小: ``$sizeMb``",
+            "- 产物 SHA-256: ``$sha256``"
+          )
+          if ($env:RELEASE_URL) {
+            $lines += "- Release 地址: $($env:RELEASE_URL)"
+          }
+          $lines -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
